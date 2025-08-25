@@ -1,4 +1,16 @@
 source("funcoes.R")
+library(plumber)
+
+
+# Pega o JSON da variável de ambiente
+creds_json <- Sys.getenv("GS4_CREDENTIALS_JSON")
+
+# Salva temporariamente para autenticar
+tmp_file <- tempfile(fileext = ".json")
+writeLines(creds_json, tmp_file)
+
+# Autentica a service account
+gs4_auth(path = tmp_file)
 
 #* @filter cors
 cors <- function(req, res) {
