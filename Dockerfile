@@ -1,5 +1,5 @@
-# Use a imagem oficial do R
-FROM r-base:latest
+# Use uma versão específica do R para garantir compatibilidade
+FROM r-base:4.3.0
 
 # Instala dependências do sistema
 RUN apt-get update && apt-get install -y \
@@ -9,17 +9,31 @@ RUN apt-get update && apt-get install -y \
     libxml2-dev \
     libfontconfig1-dev \
     libharfbuzz-dev \
+    libfribidi-dev \
+    libfreetype6-dev \
+    libpng-dev \
+    libtiff5-dev \
+    libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala os pacotes R necessários
-RUN R -e "install.packages(c('plumber','googlesheets4','jsonlite'), repos='https://cloud.r-project.org/')"
+# Define o CRAN mirror
+ENV CRAN_MIRROR=https://cloud.r-project.org/
 
-# Copia os arquivos da API
-COPY . /app
+# Instala os pacotes R um por vez para melhor debugging
+RUN R -e "options(repos = c(CRAN = '$CRAN_MIRROR')); install.packages('jsonlite', dependencies = TRUE)"
+RUN R -e "options(repos = c(CRAN = '$CRAN_MIRROR')); install.packages('plumber', dependencies = TRUE)" 
+RUN R -e "options(repos = c(CRAN = '$CRAN_MIRROR')); install.packages('googlesheets4', dependencies = TRUE)"
+RUN R -e "options(repos = c(CRAN = '$CRAN_MIRROR')); install.packages('dplyr', dependencies = TRUE)"
+RUN R -e "options(repos = c(CRAN = '$CRAN_MIRROR')); install.packages('lubridate', dependencies = TRUE)"
+
+# Cria diretório de trabalho
 WORKDIR /app
 
-# Expõe a porta da API
-EXPOSE 8000
+# Copia arquivos
+COPY . .
 
-# Comando para rodar a API
-CMD ["R", "-e", "pr <- plumber::plumb('api.R'); pr$run(host='0.0.0.0', port=8000)"]
+# Railway usa a variável de ambiente PORT
+EXPOSE $PORT
+
+# Comando para executar a API com port dinâmico do Railway
+CMD ["R", "-e", "library(plumber); port <- as.numeric(Sys.getenv('PORT', 8000)); pr <- plumb('api.R'); pr$run(host='0.0.0.0', port=port)"]

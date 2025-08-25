@@ -1,16 +1,36 @@
-source("funcoes.R")
-library(plumber)
+# Carrega bibliotecas necessárias
+suppressMessages({
+  library(plumber)
+  library(jsonlite)
+  library(googlesheets4)
+  library(dplyr)
+  library(lubridate)
+})
 
+# Carrega funções personalizadas (se existir o arquivo)
+if (file.exists("funcoes.R")) {
+  source("funcoes.R")
+}
 
-# Pega o JSON da variável de ambiente
-creds_json <- Sys.getenv("GS4_CREDENTIALS_JSON")
-
-# Salva temporariamente para autenticar
-tmp_file <- tempfile(fileext = ".json")
-writeLines(creds_json, tmp_file)
-
-# Autentica a service account
-gs4_auth(path = tmp_file)
+# Configuração de autenticação Google Sheets
+tryCatch({
+  # Pega o JSON da variável de ambiente
+  creds_json <- Sys.getenv("GS4_CREDENTIALS_JSON")
+  
+  if (creds_json != "") {
+    # Salva temporariamente para autenticar
+    tmp_file <- tempfile(fileext = ".json")
+    writeLines(creds_json, tmp_file)
+    
+    # Autentica a service account
+    gs4_auth(path = tmp_file)
+    cat("✓ Google Sheets autenticado com sucesso\n")
+  } else {
+    cat("⚠ Variável GS4_CREDENTIALS_JSON não encontrada\n")
+  }
+}, error = function(e) {
+  cat("⚠ Erro na autenticação Google Sheets:", e$message, "\n")
+})
 
 #* @filter cors
 cors <- function(req, res) {
@@ -29,65 +49,76 @@ cors <- function(req, res) {
 #* @apiTitle API de Desempenho de Vendas
 #* @apiDescription Esta API atualiza e retorna os dados de desempenho de vendas.
 
-#* Endpoint para retornar o desempenho do dia
-#* @param agendamentos Uma lista nomeada com o número de agendamentos do dia.
-#* @post /desempenho-diario
-#* @serializer unboxedJSON
-function(req, res) {
-  
-  # Debug: imprime informações da requisição
+# Função auxiliar para parsing de dados
+parse_request_data <- function(req, param_name = "agendamentos") {
   cat("=== DEBUG REQUISIÇÃO ===\n")
-  cat("Content-Type:", req$HTTP_CONTENT_TYPE, "\n")
-  cat("postBody raw:", req$postBody, "\n")
-  cat("postBody class:", class(req$postBody), "\n")
-  cat("postBody length:", length(req$postBody), "\n")
+  cat("Content-Type:", req$HTTP_CONTENT_TYPE %||% "não definido", "\n")
+  cat("postBody existe:", !is.null(req$postBody), "\n")
+  cat("postBody length:", if(!is.null(req$postBody)) nchar(req$postBody) else 0, "\n")
   
   # Tenta diferentes formas de parsing
-  agendamentos <- tryCatch({
-    # Primeiro verifica se veio nos args (comum no Swagger)
-    if ("agendamentos" %in% names(req$args) && !is.null(req$args$agendamentos)) {
-      cat("Dados encontrados em req$args$agendamentos:", req$args$agendamentos, "\n")
-      jsonlite::fromJSON(req$args$agendamentos, simplifyVector = FALSE)
+  dados <- tryCatch({
+    # Primeiro: verifica se veio nos args
+    if (param_name %in% names(req$args) && !is.null(req$args[[param_name]])) {
+      cat("Dados encontrados em req$args$", param_name, "\n")
+      dados_raw <- req$args[[param_name]]
+      if (is.character(dados_raw)) {
+        jsonlite::fromJSON(dados_raw, simplifyVector = FALSE)
+      } else {
+        dados_raw
+      }
     } 
-    # Se não, verifica se veio no postBody
-    else if (!is.null(req$postBody) && req$postBody != "" && nchar(req$postBody) > 0) {
+    # Segundo: verifica se veio no postBody
+    else if (!is.null(req$postBody) && nchar(req$postBody) > 0) {
       cat("Dados encontrados em postBody\n")
       jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
     }
-    # Se nenhum dos dois, retorna os próprios args (pode ser que o Swagger envie direto)
+    # Terceiro: usa os próprios args
     else if (length(req$args) > 0) {
-      cat("Usando req$args diretamente:", str(req$args), "\n")
+      cat("Usando req$args diretamente\n")
       req$args
     }
     else {
       stop("Nenhum dado encontrado na requisição")
     }
   }, error = function(e) {
-    cat("Erro no parsing JSON:", e$message, "\n")
-    res$status <- 400
-    return(list(erro = paste("Erro ao processar dados:", e$message)))
+    cat("Erro no parsing:", e$message, "\n")
+    stop(paste("Erro ao processar dados:", e$message))
   })
   
-  # Verifica se houve erro no parsing
-  if ("erro" %in% names(agendamentos)) {
-    return(agendamentos)
-  }
-  
-  cat("Agendamentos parsed:", str(agendamentos), "\n")
+  cat("Dados processados com sucesso\n")
   cat("========================\n")
-  
-  # Continua com o processamento normal
+  return(dados)
+}
+
+#* Endpoint para retornar o desempenho do dia
+#* @param agendamentos Uma lista nomeada com o número de agendamentos do dia.
+#* @post /desempenho-diario
+#* @serializer unboxedJSON
+function(req, res) {
   tryCatch({
+    agendamentos <- parse_request_data(req, "agendamentos")
+    
+    # Verifica se a função api_etl existe
+    if (!exists("api_etl")) {
+      stop("Função api_etl não encontrada. Verifique o arquivo funcoes.R")
+    }
+    
     dados_completos <- api_etl(agendamentos)
     
     desempenho_diario <- dados_completos |>
       filter(data == Sys.Date())
     
     return(desempenho_diario)
+    
   }, error = function(e) {
     cat("Erro no processamento:", e$message, "\n")
     res$status <- 500
-    return(list(erro = paste("Erro interno:", e$message)))
+    return(list(
+      erro = TRUE,
+      mensagem = e$message,
+      timestamp = Sys.time()
+    ))
   })
 }
 
@@ -96,46 +127,17 @@ function(req, res) {
 #* @post /desempenho-semanal
 #* @serializer unboxedJSON
 function(req, res) {
-  
-  # Debug: imprime informações da requisição
-  cat("=== DEBUG REQUISIÇÃO SEMANAL ===\n")
-  cat("Content-Type:", req$HTTP_CONTENT_TYPE, "\n")
-  cat("postBody raw:", req$postBody, "\n")
-  
-  # Mesmo tratamento de parsing
-  agendamentos <- tryCatch({
-    # Primeiro verifica se veio nos args (comum no Swagger)
-    if ("agendamentos" %in% names(req$args) && !is.null(req$args$agendamentos)) {
-      cat("Dados encontrados em req$args$agendamentos:", req$args$agendamentos, "\n")
-      jsonlite::fromJSON(req$args$agendamentos, simplifyVector = FALSE)
-    } 
-    # Se não, verifica se veio no postBody
-    else if (!is.null(req$postBody) && req$postBody != "" && nchar(req$postBody) > 0) {
-      cat("Dados encontrados em postBody\n")
-      jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
-    }
-    # Se nenhum dos dois, retorna os próprios args (pode ser que o Swagger envie direto)
-    else if (length(req$args) > 0) {
-      cat("Usando req$args diretamente:", str(req$args), "\n")
-      req$args
-    }
-    else {
-      stop("Nenhum dado encontrado na requisição")
-    }
-  }, error = function(e) {
-    cat("Erro no parsing JSON:", e$message, "\n")
-    res$status <- 400
-    return(list(erro = paste("Erro ao processar dados:", e$message)))
-  })
-  
-  if ("erro" %in% names(agendamentos)) {
-    return(agendamentos)
-  }
-  
-  cat("Agendamentos parsed:", str(agendamentos), "\n")
-  cat("================================\n")
-  
   tryCatch({
+    agendamentos <- parse_request_data(req, "agendamentos")
+    
+    # Verifica se as funções existem
+    if (!exists("api_etl")) {
+      stop("Função api_etl não encontrada. Verifique o arquivo funcoes.R")
+    }
+    if (!exists("desempenho_semana")) {
+      stop("Função desempenho_semana não encontrada. Verifique o arquivo funcoes.R")
+    }
+    
     dados_completos <- api_etl(agendamentos)
     
     # Define o início da semana (segunda-feira)
@@ -147,10 +149,15 @@ function(req, res) {
     desempenho_final <- desempenho_semana(dados_da_semana)
     
     return(desempenho_final)
+    
   }, error = function(e) {
     cat("Erro no processamento:", e$message, "\n")
     res$status <- 500
-    return(list(erro = paste("Erro interno:", e$message)))
+    return(list(
+      erro = TRUE,
+      mensagem = e$message,
+      timestamp = Sys.time()
+    ))
   })
 }
 
@@ -160,45 +167,50 @@ function() {
   return(list(
     status = "OK", 
     timestamp = Sys.time(),
-    message = "API funcionando corretamente"
+    message = "API funcionando corretamente",
+    port = Sys.getenv("PORT", "8000"),
+    r_version = R.version.string,
+    packages = list(
+      plumber = packageVersion("plumber"),
+      googlesheets4 = packageVersion("googlesheets4"),
+      jsonlite = packageVersion("jsonlite")
+    )
   ))
 }
 
 #* Endpoint de teste para POST
 #* @param dados Dados de teste
 #* @post /test-post
+#* @serializer unboxedJSON
 function(req, res) {
   cat("=== TESTE POST ===\n")
-  cat("Content-Type:", req$HTTP_CONTENT_TYPE, "\n")
-  cat("postBody:", req$postBody, "\n")
-  cat("postBody empty?:", is.null(req$postBody) || req$postBody == "", "\n")
+  cat("Content-Type:", req$HTTP_CONTENT_TYPE %||% "não definido", "\n")
+  cat("postBody exists:", !is.null(req$postBody), "\n")
+  cat("postBody length:", if(!is.null(req$postBody)) nchar(req$postBody) else 0, "\n")
   cat("args:", paste(names(req$args), collapse = ", "), "\n")
-  
-  # Mostra o conteúdo dos args
-  for(arg_name in names(req$args)) {
-    cat("arg", arg_name, ":", req$args[[arg_name]], "\n")
-  }
   
   # Testa o parsing dos dados
   dados_processados <- tryCatch({
-    if ("dados" %in% names(req$args) && !is.null(req$args$dados)) {
-      cat("Tentando fazer parse de req$args$dados\n")
-      jsonlite::fromJSON(req$args$dados, simplifyVector = FALSE)
-    } else if (length(req$args) > 0) {
-      cat("Usando req$args diretamente\n")
-      req$args
-    } else {
-      list(erro = "Nenhum dado encontrado")
-    }
+    parse_request_data(req, "dados")
   }, error = function(e) {
     list(erro = e$message)
   })
   
   return(list(
-    received_body = req$postBody,
-    content_type = req$HTTP_CONTENT_TYPE,
+    status = "success",
+    received_body = if(!is.null(req$postBody)) req$postBody else "vazio",
+    content_type = req$HTTP_CONTENT_TYPE %||% "não definido",
     args_names = names(req$args),
     args_content = req$args,
-    dados_processados = dados_processados
+    dados_processados = dados_processados,
+    timestamp = Sys.time()
   ))
 }
+
+# Mensagem de inicialização
+cat("🚀 API de Desempenho de Vendas carregada com sucesso!\n")
+cat("📊 Endpoints disponíveis:\n")
+cat("  - GET  /health (verificar status)\n")
+cat("  - POST /test-post (testar requisições)\n")
+cat("  - POST /desempenho-diario\n")
+cat("  - POST /desempenho-semanal\n")
