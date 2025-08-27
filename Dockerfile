@@ -25,6 +25,7 @@ RUN R -e "install.packages('lubridate', repos='https://cloud.r-project.org')"
 RUN R -e "install.packages('googledrive', repos='https://cloud.r-project.org')"
 RUN R -e "install.packages('googlesheets4', repos='https://cloud.r-project.org')"
 RUN R -e "install.packages('tibble', repos='https://cloud.r-project.org')"
+RUN R -e "install.packages('httr', repos='https://cloud.r-project.org')"
 # Expõe porta
 EXPOSE 8000
 
