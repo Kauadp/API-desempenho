@@ -1,21 +1,21 @@
-# Dockerfile enxuto e seguro
+# Dockerfile enxuto para API de desempenho
 FROM r-base:4.3.1
 
-# Pacotes do sistema essenciais para compilar pacotes R
+# Instala apenas dependências do sistema necessárias
 RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libssl-dev \
     libxml2-dev \
     libsodium-dev \
     build-essential \
-    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Define diretório de trabalho
 WORKDIR /app
 
-# Copia a API
-COPY api_login.R /app/api_login.R
+# Copia arquivos da aplicação
+COPY api_desempenho.R /app/api_desempenho.R
+COPY funcoes.R /app/funcoes.R
 
 # Instala pacotes R leves (compilação rápida)
 RUN R -e "install.packages(c('plumber','dplyr','forcats','jsonlite','jose'), repos='https://cloud.r-project.org')"
@@ -24,9 +24,8 @@ RUN R -e "install.packages(c('plumber','dplyr','forcats','jsonlite','jose'), rep
 RUN R -e "install.packages('lubridate', repos='https://cloud.r-project.org')"
 RUN R -e "install.packages('googledrive', repos='https://cloud.r-project.org')"
 RUN R -e "install.packages('googlesheets4', repos='https://cloud.r-project.org')"
-
-# Expõe a porta da API
+# Expõe porta
 EXPOSE 8000
 
 # Comando para rodar a API
-CMD ["R", "-e", "pr <- plumber::plumb('api_login.R'); pr$run(host='0.0.0.0', port=8000)"]
+CMD ["R", "-e", "pr <- plumber::plumb('api_desempenho.R'); pr$run(host='0.0.0.0', port=8000)"]
