@@ -241,16 +241,45 @@ function() {
 #* @post /adicionar-agendamento
 #* @serializer unboxedJSON
 function(req, res) {
-  dados_agendamento <- jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
-  dados_agendamento$data <- as.Date(dados_agendamento$data)
-  
-  # Validação simples
-  if (is.null(dados_agendamento$responsavel) || dados_agendamento$responsavel=="") {
-    res$status <- 400
-    return(list(erro="Campo 'responsavel' é obrigatório"))
-  }
-  
-  # restante do código de gravação igual ao seu original...
+  tryCatch({
+    dados_agendamento <- jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
+    dados_agendamento$data <- as.Date(dados_agendamento$data)
+    
+    # Validação simples
+    if (is.null(dados_agendamento$responsavel) || dados_agendamento$responsavel == "") {
+      res$status <- 400
+      return(list(erro = "Campo 'responsavel' é obrigatório"))
+    }
+    
+    # Criar novo registro (usando a data atual)
+    novo_agendamento <- data.frame(
+      responsavel = dados_agendamento$responsavel,
+      empresa = dados_agendamento$empresa,
+      data = Sys.Date(),
+      data_adicao = Sys.time(),
+      stringsAsFactors = FALSE
+    )
+    
+    # Adicionar ao dataframe existente
+    dados_atualizados <- rbind(dados_existentes, novo_agendamento)
+    
+    # Escrever de volta na planilha
+    googlesheets4::write_sheet(dados_atualizados, sheet_id, sheet = "Agendamentos")
+    
+    cat("Agendamento adicionado com sucesso\n")
+    cat("==================================\n")
+    
+    return(list(
+      status = "sucesso",
+      message = "Agendamento adicionado com sucesso",
+      agendamento = novo_agendamento
+    ))
+    
+  }, error = function(e) {
+    cat("Erro ao processar agendamento:", e$message, "\n")
+    res$status <- 500
+    return(list(erro = paste("Erro interno:", e$message)))
+  })
 }
 
 # --------------------
