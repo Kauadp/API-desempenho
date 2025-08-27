@@ -12,7 +12,7 @@ pacotes <- c("ggplot2", "MASS", "ggthemes", "stringr", "lubridate", "tidyverse",
              "gridExtra", "broom", "purrr", "stats", "htmltools", "usethis",
              "randomForest", "car", "xgboost", "caTools", "pscl", "VGAM", "Microsoft365R", "tsibble", "forecast", "zoo", "RSelenium", "caret", "mice", "googlesheets4", "tibble", "plumber")
 
-carregar_pacote(pacotes)
+#carregar_pacote(pacotes)
 
 
 # ---- Gráfico por Meta ----
