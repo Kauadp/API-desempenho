@@ -19,23 +19,17 @@ api_etl <- function(agendamento) {
   cursor_atual <- NULL
   limite_por_pagina <- 100
   
-  data <- Sys.Date()
-  start <- paste(data, "00:00:00")
-  end <- paste(data, "23:59:00")
+  data_hoje <- Sys.Date()
+  start <- paste(data_hoje, "00:00:00")
+  end <- paste(data_hoje, "23:59:00")
   
+  # -------- Paginação --------
   while (TRUE) {
-    query_params <- list(
-      start = start,
-      end = end,
-      limit = limite_por_pagina,
-      cursor = cursor_atual
-    )
-    
+    query_params <- list(start = start, end = end, limit = limite_por_pagina, cursor = cursor_atual)
     response <- GET(full_url, config = headers, query = query_params)
     
     if (status_code(response) != 200) {
-      message(paste("Erro na requisição. Status:", status_code(response)))
-      break
+      stop(paste("Erro na requisição. Status:", status_code(response)))
     }
     
     dados_paginados <- fromJSON(content(response, "text", encoding = "UTF-8"))
@@ -54,181 +48,90 @@ api_etl <- function(agendamento) {
     cursor_atual <- next_cursor
   }
   
-  dados <- dados |>
-    distinct(id_call, .keep_all = TRUE)
-  
+  dados <- dados %>% distinct(id_call, .keep_all = TRUE)
   message(paste("Total de registros únicos obtidos:", nrow(dados)))
   
-  dados$start <- str_sub(dados$start, start = 1, end = 10)
+  # -------- Tratamento de datas --------
+  if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada nos dados da API")
+  dados$start <- str_sub(dados$start, 1, 10)
   dados$start <- as.Date(dados$start)
   
-  dados <- dados |>
-    mutate(
-      name = case_when(
-        user$name == "kelly.ewers" ~ "Kelly",
-        user$name == "LDR" ~ "Matheus",
-        user$name == "Gustavo Dias" ~ "Consultoria",
-        TRUE ~ user$name
-      )
+  if (all(is.na(dados$start))) stop("Todos os valores de start são NA")
+  
+  # -------- Ajuste de nomes --------
+  dados <- dados %>%
+    mutate(name = case_when(
+      user$name == "kelly.ewers" ~ "Kelly",
+      user$name == "LDR" ~ "Matheus",
+      user$name == "Gustavo Dias" ~ "Consultoria",
+      TRUE ~ user$name
+    ),
+    Relevante = ifelse(duration >= 60, 1, 0)
     )
   
-  dados$Relevante <- ifelse(dados$duration >= 60, 1, 0)
-  
-  desempenho <- dados |>
-    group_by(user$name) |>
+  desempenho <- dados %>%
+    group_by(name) %>%
     summarise(
-      n = n(),
-      n_relevante = sum(Relevante == 1, na.rm = TRUE)
-    ) |>
-    ungroup()
+      ligacoes_totais = n(),
+      ligacoes_relevantes = sum(Relevante, na.rm = TRUE),
+      .groups = "drop"
+    )
   
-  names(desempenho) <- c("responsavel", "ligacoes_totais", "ligacoes_relevantes")
-  
-  # Recebe a lista nomeada com os agendamentos
-  # Exemplo de entrada: list("Bruna" = 1, "Stela" = 1, "Matheus" = 0)
-  agendamento <- agendamento
-  
-  # A nova lógica para lidar com a lista de agendamentos
+  # -------- Agendamentos --------
   agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") |> 
     mutate(agendamento = as.numeric(agendamento))
   
-  desempenho <- desempenho |>
-    left_join(agendamentos_df, by = "responsavel") |>
+  desempenho <- desempenho %>%
+    left_join(agendamentos_df, by = c("name"="responsavel")) %>%
     mutate(agendamento = coalesce(agendamento, 0))
   
-  desempenho$meta_ligacoes <- ifelse(desempenho$responsavel %in% c("Kelly", "Priscila Prado", "Matheus", "Consultoria"),
-                                     NA,
-                                     rep(120, dim(desempenho)[[1]]))
+  # -------- Metas --------
+  metas_na <- c("Kelly", "Priscila Prado", "Matheus", "Consultoria")
+  desempenho <- desempenho %>%
+    mutate(
+      meta_ligacoes = ifelse(name %in% metas_na, NA, 120),
+      meta_ligacoes_relevantes = ifelse(name %in% metas_na, NA, 24),
+      meta_agendamento = case_when(
+        name %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
+        name == "Matheus" ~ 6/5,
+        TRUE ~ 2
+      ),
+      atingimento_ligacoes = ifelse(!is.na(meta_ligacoes) & meta_ligacoes!=0, ligacoes_totais/meta_ligacoes, 0),
+      atingimento_ligacoes_relevantes = ifelse(!is.na(meta_ligacoes_relevantes) & meta_ligacoes_relevantes!=0, ligacoes_relevantes/meta_ligacoes_relevantes, 0),
+      atingimento_agendamento = ifelse(!is.na(meta_agendamento) & meta_agendamento!=0, agendamento/meta_agendamento, 0),
+      ligacao_x_ligacao_relevante = ifelse(ligacoes_totais!=0, ligacoes_relevantes/ligacoes_totais, 0),
+      ligacao_relevante_x_agendamento = ifelse(ligacoes_relevantes!=0, agendamento/ligacoes_relevantes, 0),
+      ligacao_x_agendamento = ifelse(ligacoes_totais!=0, agendamento/ligacoes_totais, 0),
+      data = data_hoje
+    ) %>%
+    arrange(desc(agendamento))
   
-  desempenho$meta_ligacoes_relevantes <- ifelse(desempenho$responsavel %in% c("Kelly", "Priscila Prado", "Matheus", "Consultoria"),
-                                                NA,
-                                                rep(24, dim(desempenho)[[1]]))
-  
-  desempenho$meta_agendamento <- ifelse(desempenho$responsavel %in% c("Kelly", "Priscila Prado", "Consultoria"),
-                                        NA,
-                                        rep(2, dim(desempenho)[[1]]))
-  
-  desempenho$meta_agendamento <- ifelse(desempenho$responsavel == "Matheus", 6/5,
-                                        desempenho$meta_agendamento)
-  
-  desempenho$atingimento_ligacoes <- ifelse(desempenho$meta_ligacoes != 0,
-                                            desempenho$ligacoes_totais / desempenho$meta_ligacoes,
-                                            0)
-  
-  desempenho$atingimento_ligacoes_relevantes <- ifelse(desempenho$meta_ligacoes_relevantes != 0,
-                                                       desempenho$ligacoes_relevantes / desempenho$meta_ligacoes_relevantes,
-                                                       0)
-  
-  desempenho$atingimento_agendamento <- ifelse(desempenho$meta_agendamento != 0,
-                                               desempenho$agendamento / desempenho$meta_agendamento,
-                                               0)
-  
-  desempenho$ligacao_x_ligacao_relevante <- ifelse(desempenho$ligacoes_totais != 0,
-                                                   desempenho$ligacoes_relevantes / desempenho$ligacoes_totais,
-                                                   0)
-  
-  desempenho$ligacao_relevante_x_agendamento <- ifelse(desempenho$ligacoes_relevantes != 0,
-                                                       desempenho$agendamento / desempenho$ligacoes_relevantes,
-                                                       0)
-  
-  desempenho$ligacao_x_agendamento <- ifelse(desempenho$ligacoes_totais != 0,
-                                             desempenho$agendamento / desempenho$ligacoes_totais,
-                                             0)
-  
-  desempenho$data <- dados$start[1]
-  desempenho <- desempenho[order(desempenho$agendamento, decreasing = T), ]
-  
-  # --- TRECHO CORRIGIDO PARA GOOGLE SHEETS ---
-  
+  # -------- Google Sheets --------
   sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
-  data_hoje <- desempenho$data[1]
   
-  message(paste("Processando dados para a data:", data_hoje))
-  
-  # Tenta ler a planilha existente da aba "Página1"
   dados_historicos_atualizados <- tryCatch({
-    message("Tentando ler dados históricos da aba 'Página1'...")
-    # Mudança: col_types termina com 'c' (character) em vez de 'd' (double) para a coluna data
+    message("Tentando ler dados históricos...")
     dados_historicos <- read_sheet(ss = sheet_id, sheet = "Página1", col_types = "cnnnnnnnnnnnnc")
     
-    message(paste("Dados históricos lidos com sucesso. Total de linhas:", nrow(dados_historicos)))
-    
-    # Verifica e converte a coluna 'data'
     if ("data" %in% names(dados_historicos)) {
-      # Primeiro, verifica quantos NAs existem antes da conversão
-      na_count_before <- sum(is.na(dados_historicos$data))
-      message(paste("Valores NA na coluna data (antes da conversão):", na_count_before, "de", nrow(dados_historicos)))
-      
-      # Mostra algumas amostras das datas como estão
-      message(paste("Primeiras 5 datas como estão:", paste(head(dados_historicos$data, 5), collapse = ", ")))
-      
-      # Converte de texto "YYYY-mm-dd" para Date
-      dados_historicos$data <- as.Date(dados_historicos$data, format = "%Y-%m-%d")
-      
-      # Verifica quantos NAs existem após a conversão
-      na_count_after <- sum(is.na(dados_historicos$data))
-      message(paste("Valores NA na coluna data (após conversão):", na_count_after, "de", nrow(dados_historicos)))
-      
-      # Remove linhas onde a data é NA (dados inválidos)
-      dados_validos <- dados_historicos |>
-        filter(!is.na(data))
-      
-      message(paste("Após remover dados com data NA, restaram:", nrow(dados_validos), "linhas válidas"))
-      
-      if (nrow(dados_validos) > 0) {
-        datas_unicas <- unique(dados_validos$data)
-        message(paste("Datas únicas nos dados válidos:", paste(datas_unicas, collapse = ", ")))
-        message(paste("Range de datas: de", min(datas_unicas), "até", max(datas_unicas)))
-        
-        # Remove dados da data atual se já existirem (para evitar duplicação)
-        dados_filtrados <- dados_validos |>
-          filter(data != data_hoje)
-        
-        message(paste("Após filtrar data atual (", data_hoje, "), restaram:", nrow(dados_filtrados), "linhas históricas"))
-      } else {
-        message("Nenhum dado histórico válido encontrado.")
-        dados_filtrados <- data.frame()
-      }
-      
+      dados_historicos$data <- as.Date(dados_historicos$data)
+      dados_filtrados <- dados_historicos %>% filter(data != data_hoje)
     } else {
-      message("Coluna 'data' não encontrada nos dados históricos.")
       dados_filtrados <- data.frame()
     }
     
-    message(paste("Adicionando", nrow(desempenho), "novas linhas"))
+    bind_rows(dados_filtrados, desempenho)
     
-    # Combina dados históricos (sem a data atual) + dados novos
-    if (nrow(dados_filtrados) > 0) {
-      resultado <- bind_rows(dados_filtrados, desempenho)
-      message(paste("Total final:", nrow(resultado), "linhas (", nrow(dados_filtrados), "históricas +", nrow(desempenho), "novas)"))
-      resultado
-    } else {
-      message("Usando apenas dados do dia atual (sem dados históricos válidos)")
-      desempenho
-    }
-    
-  }, error = function(e) {
-    message(paste("Erro ao ler dados históricos:", e$message))
-    message("Usando apenas dados do dia atual")
+  }, error=function(e){
+    message("Falha ao ler dados históricos:", e$message)
     desempenho
   })
   
-  message(paste("Total de linhas para salvar:", nrow(dados_historicos_atualizados)))
-  
-  # Escreve os dados atualizados na aba "Sheet1"
   tryCatch({
-    write_sheet(data = dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
-    message("Dados salvos com sucesso na aba 'Página1' do Google Sheets!")
-  }, error = function(e) {
-    message(paste("Erro ao salvar no Google Sheets:", e$message))
-    # Tenta criar a aba se não existir
-    tryCatch({
-      sheet_add(ss = sheet_id, sheet = "Sheet1")
-      write_sheet(data = dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
-      message("Aba 'Página1' criada e dados salvos com sucesso!")
-    }, error = function(e2) {
-      message(paste("Erro ao criar aba e salvar:", e2$message))
-    })
+    write_sheet(dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
+    message("Dados salvos no Google Sheets com sucesso!")
+  }, error=function(e){
+    message("Erro ao salvar no Google Sheets:", e$message)
   })
   
   return(dados_historicos_atualizados)
@@ -238,70 +141,62 @@ api_etl <- function(agendamento) {
 # --------------------
 # Função de ETL Semanal
 # --------------------
-desempenho_semana <- function(desempenho_sem) {
-  desempenho_sem$meta_ligacoes <- desempenho_sem$meta_ligacoes*5
-  desempenho_sem$meta_ligacoes_relevantes <- desempenho_sem$meta_ligacoes_relevantes*5
-  desempenho_sem$meta_agendamento <- desempenho_sem$meta_agendamento*5
+desempenho_semana_compacta <- function(dados_semana) {
+  # Ajusta metas especiais antes da multiplicação
+  dados_semana <- dados_semana %>%
+    mutate(
+      meta_ligacoes = case_when(
+        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        TRUE ~ meta_ligacoes
+      ),
+      meta_ligacoes_relevantes = case_when(
+        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        TRUE ~ meta_ligacoes_relevantes
+      ),
+      meta_agendamento = case_when(
+        responsavel %in% c("Kelly","Priscila Prado","Consultoria") ~ NA_real_,
+        responsavel == "Matheus" ~ 6/5,
+        TRUE ~ meta_agendamento
+      )
+    ) %>%
+    # Multiplica metas por 5
+    mutate(across(c(meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento), ~ .x * 5))
   
-  desempenho_sem$atingimento_ligacoes <- ifelse(desempenho_sem$meta_ligacoes != 0, 
-                                                desempenho_sem$ligacoes_totais/desempenho_sem$meta_ligacoes,
-                                                NA)
-  desempenho_sem$atingimento_ligacoes_relevantes <- ifelse(desempenho_sem$meta_ligacoes_relevantes != 0,
-                                                           desempenho_sem$ligacoes_relevantes/desempenho_sem$meta_ligacoes_relevantes,
-                                                           NA)
-  desempenho_sem$atingimento_agendamento <- ifelse(desempenho_sem$meta_agendamento != 0,
-                                                   desempenho_sem$agendamento/desempenho_sem$meta_agendamento,
-                                                   NA)
-  desempenho_sem$ligacao_x_ligacao_relevante <- ifelse(desempenho_sem$ligacoes_totais != 0,
-                                                       desempenho_sem$ligacoes_relevantes/desempenho_sem$ligacoes_totais,
-                                                       NA)
-  desempenho_sem$ligacao_relevante_x_agendamento <- ifelse(desempenho_sem$ligacoes_relevantes != 0,
-                                                           desempenho_sem$agendamento/desempenho_sem$ligacoes_relevantes,
-                                                           NA)
-  desempenho_sem$ligacao_x_agendamento <- ifelse(desempenho_sem$ligacoes_totais != 0,
-                                                 desempenho_sem$agendamento/desempenho_sem$ligacoes_totais,
-                                                 NA)
-  soma_sem <- function(pessoa) {
-    desempenho_sem |>
-      select(!data) |> 
-      filter(responsavel == pessoa) |> 
-      group_by(
-        responsavel,               
-        meta_ligacoes,             
-        meta_ligacoes_relevantes,  
-        meta_agendamento
-      ) |>
+  # Função para resumir o desempenho por pessoa
+  resumir <- function(pessoa) {
+    df <- dados_semana %>%
+      filter(responsavel == pessoa) %>%
+      group_by(responsavel, meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento) %>%
       summarise(
-        # As colunas abaixo serão somadas para todas as linhas dentro do grupo
         ligacoes_totais = sum(ligacoes_totais, na.rm = TRUE),
         ligacoes_relevantes = sum(ligacoes_relevantes, na.rm = TRUE),
         agendamento = sum(agendamento, na.rm = TRUE),
-        atingimento_ligacoes = sum(atingimento_ligacoes, na.rm = F),
-        atingimento_ligacoes_relevantes = sum(atingimento_ligacoes_relevantes, na.rm = F),
-        atingimento_agendamento = sum(atingimento_agendamento, na.rm = F),
-        ligacao_x_agendamento = ifelse(ligacoes_totais != 0, sum(agendamento, na.rm =T)/sum(ligacoes_totais, na.rm = T),NA),
-        ligacao_x_ligacao_relevante = ifelse(ligacoes_totais != 0, sum(ligacoes_relevantes, na.rm =T)/sum(ligacoes_totais, na.rm =T),NA),
-        ligacao_relevante_x_agendamento = ifelse(ligacoes_relevantes != 0, sum(agendamento, na.rm = T)/sum(ligacoes_relevantes, na.rm = T),NA),
-        .groups = 'drop' # Remove o agrupamento do resultado final
+        atingimento_ligacoes = sum(atingimento_ligacoes, na.rm = TRUE),
+        atingimento_ligacoes_relevantes = sum(atingimento_ligacoes_relevantes, na.rm = TRUE),
+        atingimento_agendamento = sum(atingimento_agendamento, na.rm = TRUE),
+        ligacao_x_ligacao_relevante = ifelse(sum(ligacoes_totais, na.rm = TRUE) != 0,
+                                             sum(ligacoes_relevantes, na.rm = TRUE) / sum(ligacoes_totais, na.rm = TRUE),
+                                             NA_real_),
+        ligacao_x_agendamento = ifelse(sum(ligacoes_totais, na.rm = TRUE) != 0,
+                                       sum(agendamento, na.rm = TRUE) / sum(ligacoes_totais, na.rm = TRUE),
+                                       NA_real_),
+        ligacao_relevante_x_agendamento = ifelse(sum(ligacoes_relevantes, na.rm = TRUE) != 0,
+                                                 sum(agendamento, na.rm = TRUE) / sum(ligacoes_relevantes, na.rm = TRUE),
+                                                 NA_real_),
+        .groups = "drop"
       )
-    
+    return(df)
   }
   
-  soma_desempenho_sem <- rbind(soma_sem("Bruna Azevedo"),
-                               soma_sem("Emilin"),
-                               soma_sem("Maria Luisa"),
-                               soma_sem("Stela"),
-                               soma_sem("Kelly"),
-                               soma_sem("Priscila Prado"),
-                               soma_sem("Consultoria"),
-                               soma_sem("Matheus"),
-                               soma_sem("Gabriela Moreira"),
-                               soma_sem("Marcelo"))
+  # Lista de responsáveis
+  responsaveis <- c("Bruna Azevedo","Emilin","Maria Luisa","Stela","Kelly","Priscila Prado",
+                    "Consultoria","Matheus","Gabriela Moreira","Marcelo")
   
-  soma_desempenho_sem <- soma_desempenho_sem[order(soma_desempenho_sem$agendamento, decreasing = T),]
+  # Aplica resumir a todos e combina
+  resultado <- bind_rows(lapply(responsaveis, resumir)) %>%
+    arrange(desc(agendamento))
   
-  
-  return(soma_desempenho_sem)
+  return(resultado)
 }
 
 
@@ -417,7 +312,7 @@ function(req, res) {
   tryCatch({
     dados_completos <- api_etl(request_data$agendamentos)
     dados_completos$data <- as.Date(dados_completos$data)
-    
+    cat("Filtrando os dados pelo dia", Sys.Date())
     desempenho_diario <- dados_completos %>%
       filter(data == Sys.Date())
     
@@ -537,7 +432,7 @@ function() {
 #* @serializer unboxedJSON
 function(req, res) {
   dados_existentes <- tryCatch({
-    googlesheets4::read_sheet(sheet_id, sheet = "Agendamentos")
+    googlesheets4::read_sheet("1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4", sheet = "Agendamentos")
   }, error = function(e) {
     data.frame() # Se não existir ainda, cria um data.frame vazio
   })
