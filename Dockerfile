@@ -1,5 +1,5 @@
 # Dockerfile alternativo mais robusto
-FROM trestletech/plumber
+FROM rocker/plumber:4.3.1
 
 # Instala dependências do sistema em uma única camada
 RUN apt-get update && apt-get install -y \
