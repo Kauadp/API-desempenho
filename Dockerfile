@@ -3,39 +3,17 @@ FROM trestletech/plumber
 
 # Instala dependências do sistema em uma única camada
 RUN apt-get update && apt-get install -y \
-    # Ferramentas de build essenciais
     build-essential \
-    gcc \
-    g++ \
-    gfortran \
-    make \
-    cmake \
-    pkg-config \
-    # Bibliotecas SSL e rede
-    libcurl4-openssl-dev \
-    libssl-dev \
-    libxml2-dev \
-    libsodium-dev \
-    # Bibliotecas gráficas
-    libcairo2-dev \
-    libfontconfig1-dev \
-    libfreetype6-dev \
-    libpng-dev \
-    libtiff5-dev \
-    libjpeg-dev \
-    # Dependências específicas para pacotes R
-    libgit2-dev \
-    libharfbuzz-dev \
-    libfribidi-dev \
-    libv8-dev \
-    libudunits2-dev \
-    libgdal-dev \
-    libproj-dev \
-    libgeos-dev \
-    # Ferramentas adicionais
+    gcc g++ gfortran make cmake pkg-config \
+    libcurl4-openssl-dev libssl-dev libxml2-dev libsodium-dev \
+    libcairo2-dev libfontconfig1-dev libfreetype6-dev \
+    libpng-dev libtiff-dev libjpeg62-turbo-dev \
+    libgit2-dev libharfbuzz-dev libfribidi-dev \
+    libudunits2-dev libgdal-dev libproj-dev libgeos-dev \
     wget \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
 
 # Define diretório de trabalho
 WORKDIR /app
