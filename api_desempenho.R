@@ -12,6 +12,7 @@ library(httr)
 # Função de ETL
 # --------------------
 api_etl <- function(agendamento) {
+  message("Consultando os dados da API do CRM...")
   full_url <- "https://api.leads2b.com/v2/calls"
   api_key <- Sys.getenv("API_KEY_V2")
   headers <- add_headers(Authorization = paste("Bearer", api_key))
@@ -52,6 +53,7 @@ api_etl <- function(agendamento) {
   message(paste("Total de registros únicos obtidos:", nrow(dados)))
   
   # -------- Tratamento de datas --------
+  message("Tratando as datas...")
   if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada nos dados da API")
   dados$start <- str_sub(dados$start, 1, 10)
   dados$start <- as.Date(dados$start)
@@ -59,6 +61,7 @@ api_etl <- function(agendamento) {
   if (all(is.na(dados$start))) stop("Todos os valores de start são NA")
   
   # -------- Ajuste de nomes --------
+  message("Ajustando os nomes...")
   dados <- dados %>%
     mutate(name = case_when(
       user$name == "kelly.ewers" ~ "Kelly",
@@ -78,6 +81,7 @@ api_etl <- function(agendamento) {
     )
   
   # -------- Agendamentos --------
+  message("Adicionando os agendamentos...")
   agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") |> 
     mutate(agendamento = as.numeric(agendamento))
   
@@ -86,6 +90,7 @@ api_etl <- function(agendamento) {
     mutate(agendamento = coalesce(agendamento, 0))
   
   # -------- Metas --------
+  message("Configurando as metas...")
   metas_na <- c("Kelly", "Priscila Prado", "Matheus", "Consultoria")
   desempenho <- desempenho %>%
     mutate(
@@ -107,6 +112,7 @@ api_etl <- function(agendamento) {
     arrange(desc(agendamento))
   
   # -------- Google Sheets --------
+  message("Lendo os dados históricos da base...")
   sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
   
   dados_historicos_atualizados <- tryCatch({
@@ -143,6 +149,7 @@ api_etl <- function(agendamento) {
 # --------------------
 desempenho_semana_compacta <- function(dados_semana) {
   # Ajusta metas especiais antes da multiplicação
+  message("Ajustando as metas especiais...")
   dados_semana <- dados_semana %>%
     mutate(
       meta_ligacoes = case_when(
@@ -193,6 +200,7 @@ desempenho_semana_compacta <- function(dados_semana) {
                     "Consultoria","Matheus","Gabriela Moreira","Marcelo")
   
   # Aplica resumir a todos e combina
+  message("Combinando os dados com novas metas semanais...")
   resultado <- bind_rows(lapply(responsaveis, resumir)) %>%
     arrange(desc(agendamento))
   
