@@ -12,8 +12,10 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     libtiff5-dev \
     libjpeg-dev \
+    libsodium-dev \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Define diretório de trabalho
 WORKDIR /app
