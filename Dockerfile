@@ -1,5 +1,5 @@
 # Dockerfile alternativo mais robusto
-FROM rocker/r-ver:4.3.1
+FROM rocker/plumber:latest
 
 # Instala dependências do sistema em uma única camada
 RUN apt-get update && apt-get install -y \
