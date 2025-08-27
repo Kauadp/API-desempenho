@@ -5,6 +5,8 @@ library(dplyr)
 library(googlesheets4)
 library(googledrive)
 library(lubridate) # importante para floor_date e manipulação de datas
+library(tibble)
+
 
 source("funcoes.R")
 
