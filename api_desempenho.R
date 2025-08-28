@@ -12,91 +12,95 @@ library(httr)
 # Função de ETL
 # --------------------
 api_etl <- function(agendamento) {
-  message("Consultando os dados da API do CRM...")
+  message("=== Iniciando ETL do CRM ===")
+  
   full_url <- "https://api.leads2b.com/v2/calls"
   api_key <- Sys.getenv("API_KEY_V2")
-  headers <- add_headers(Authorization = paste("Bearer", api_key))
+  if (api_key == "") stop("API_KEY_V2 não definida no ambiente")
+  headers <- httr::add_headers(Authorization = paste("Bearer", api_key))
+  
   dados <- data.frame()
   cursor_atual <- NULL
   limite_por_pagina <- 100
-  
   data_hoje <- Sys.Date()
   start <- paste(data_hoje, "00:00:00")
   end <- paste(data_hoje, "23:59:00")
   
   # -------- Paginação --------
-  while (TRUE) {
+  repeat {
     query_params <- list(start = start, end = end, limit = limite_por_pagina, cursor = cursor_atual)
-    response <- GET(full_url, config = headers, query = query_params)
+    response <- tryCatch(httr::GET(full_url, config = headers, query = query_params),
+                         error = function(e) stop("Erro ao consultar API do CRM: ", e$message))
     
-    if (status_code(response) != 200) {
-      stop(paste("Erro na requisição. Status:", status_code(response)))
+    if (httr::status_code(response) != 200) {
+      stop(paste("Erro na requisição da API:", httr::status_code(response)))
     }
     
-    dados_paginados <- fromJSON(content(response, "text", encoding = "UTF-8"))
+    dados_paginados <- jsonlite::fromJSON(httr::content(response, "text", encoding = "UTF-8"))
+    
+    if (!"data" %in% names(dados_paginados)) {
+      stop("API retornou dados inesperados: coluna 'data' não encontrada")
+    }
+    
     dados_da_pagina <- dados_paginados$data
     next_cursor <- dados_paginados$next_cursor
     
     if (!is.null(dados_da_pagina) && nrow(dados_da_pagina) > 0) {
-      dados <- bind_rows(dados, dados_da_pagina)
+      dados <- dplyr::bind_rows(dados, dados_da_pagina)
     }
     
-    if (is.null(next_cursor) || next_cursor == "") {
-      message("Paginação concluída. Não há mais dados.")
-      break
-    }
-    
+    if (is.null(next_cursor) || next_cursor == "") break
     cursor_atual <- next_cursor
   }
   
-  dados <- dados %>% distinct(id_call, .keep_all = TRUE)
+  dados <- dplyr::distinct(dados, id_call, .keep_all = TRUE)
   message(paste("Total de registros únicos obtidos:", nrow(dados)))
   
   # -------- Tratamento de datas --------
-  message("Tratando as datas...")
-  if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada nos dados da API")
-  dados$start <- str_sub(dados$start, 1, 10)
-  dados$start <- as.Date(dados$start)
-  
-  if (all(is.na(dados$start))) stop("Todos os valores de start são NA")
+  if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada")
+  dados$start <- as.Date(substr(dados$start, 1, 10))
+  if (all(is.na(dados$start))) stop("Todos os valores de 'start' são NA")
   
   # -------- Ajuste de nomes --------
-  message("Ajustando os nomes...")
+  if (!"user" %in% names(dados) || !"name" %in% names(dados$user)) {
+    dados$user$name <- NA_character_
+    message("Coluna 'user$name' não encontrada, preenchida com NA")
+  }
+  
   dados <- dados %>%
-    mutate(name = case_when(
-      user$name == "kelly.ewers" ~ "Kelly",
-      user$name == "LDR" ~ "Matheus",
-      user$name == "Gustavo Dias" ~ "Consultoria",
-      TRUE ~ user$name
-    ),
-    Relevante = ifelse(duration >= 60, 1, 0)
+    dplyr::mutate(
+      name = dplyr::case_when(
+        user$name == "kelly.ewers" ~ "Kelly",
+        user$name == "LDR" ~ "Matheus",
+        user$name == "Gustavo Dias" ~ "Consultoria",
+        TRUE ~ user$name
+      ),
+      Relevante = ifelse(!is.na(duration) & duration >= 60, 1, 0)
     )
   
   desempenho <- dados %>%
-    group_by(name) %>%
-    summarise(
+    dplyr::group_by(name) %>%
+    dplyr::summarise(
       ligacoes_totais = n(),
       ligacoes_relevantes = sum(Relevante, na.rm = TRUE),
       .groups = "drop"
     )
   
   # -------- Agendamentos --------
-  message("Adicionando os agendamentos...")
-  agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") |> 
-    mutate(agendamento = as.numeric(agendamento))
+  agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") %>%
+    dplyr::mutate(agendamento = as.numeric(agendamento))
   
   desempenho <- desempenho %>%
-    left_join(agendamentos_df, by = c("name"="responsavel")) %>%
-    mutate(agendamento = coalesce(agendamento, 0))
+    dplyr::left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
+    dplyr::mutate(agendamento = coalesce(agendamento, 0))
   
   # -------- Metas --------
-  message("Configurando as metas...")
   metas_na <- c("Kelly", "Priscila Prado", "Matheus", "Consultoria")
   desempenho <- desempenho %>%
-    mutate(
+    dplyr::mutate(
       meta_ligacoes = ifelse(name %in% metas_na, NA, 120),
       meta_ligacoes_relevantes = ifelse(name %in% metas_na, NA, 24),
-      meta_agendamento = case_when(
+      meta_agendamento = dplyr::case_when(
         name %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
         name == "Matheus" ~ 6/5,
         TRUE ~ 2
@@ -109,14 +113,13 @@ api_etl <- function(agendamento) {
       ligacao_x_agendamento = ifelse(ligacoes_totais!=0, agendamento/ligacoes_totais, 0),
       data = data_hoje
     ) %>%
-    arrange(desc(agendamento))
+    dplyr::arrange(desc(agendamento))
   
   # -------- Google Sheets --------
-  message("Lendo os dados históricos da base...")
   sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
   
   dados_historicos_atualizados <- tryCatch({
-    message("Tentando ler dados históricos...")
+    message("Lendo dados históricos da planilha...")
     dados_historicos <- read_sheet(ss = sheet_id, sheet = "Página1", col_types = "cnnnnnnnnnnnnc")
     
     if ("data" %in% names(dados_historicos)) {
@@ -129,7 +132,7 @@ api_etl <- function(agendamento) {
     bind_rows(dados_filtrados, desempenho)
     
   }, error=function(e){
-    message("Falha ao ler dados históricos:", e$message)
+    message("Falha ao ler dados históricos: ", e$message)
     desempenho
   })
   
@@ -137,17 +140,19 @@ api_etl <- function(agendamento) {
     write_sheet(dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
     message("Dados salvos no Google Sheets com sucesso!")
   }, error=function(e){
-    message("Erro ao salvar no Google Sheets:", e$message)
+    message("Erro ao salvar no Google Sheets: ", e$message)
   })
   
+  message("=== ETL concluído ===")
   return(dados_historicos_atualizados)
 }
+
 
 
 # --------------------
 # Função de ETL Semanal
 # --------------------
-desempenho_semana_compacta <- function(dados_semana) {
+desempenho_semana <- function(dados_semana) {
   # Ajusta metas especiais antes da multiplicação
   message("Ajustando as metas especiais...")
   dados_semana <- dados_semana %>%
@@ -468,7 +473,7 @@ function(req, res) {
     dados_atualizados <- rbind(dados_existentes, novo_agendamento)
     
     # Escrever de volta na planilha
-    googlesheets4::write_sheet(dados_atualizados, sheet_id, sheet = "Agendamentos")
+    googlesheets4::write_sheet(dados_atualizados, "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4", sheet = "Agendamentos")
     
     cat("Agendamento adicionado com sucesso\n")
     cat("==================================\n")
