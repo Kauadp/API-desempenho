@@ -141,26 +141,46 @@ api_etl <- function(agendamento) {
   
   # -------- Ajuste de nomes e relevância --------
   message("Ajustando os nomes...")
-  if (!"user" %in% names(dados) || !"name" %in% names(dados$user)) {
-    dados$user$name <- NA_character_
-    message("Coluna 'user$name' não encontrada, preenchida com NA")
+  
+  # Verificar e tratar a estrutura user
+  if (!"user" %in% names(dados)) {
+    dados$user <- list(name = rep(NA_character_, nrow(dados)))
+  } else if (is.null(dados$user) || all(is.na(dados$user))) {
+    dados$user <- list(name = rep(NA_character_, nrow(dados)))
+  } else if (!"name" %in% names(dados$user)) {
+    # Se user existe mas não tem name, criar name
+    if (is.data.frame(dados$user)) {
+      dados$user$name <- NA_character_
+    } else {
+      dados$user <- list(name = rep(NA_character_, nrow(dados)))
+    }
+  }
+  
+  # Extrair o nome do usuário de forma segura
+  user_name <- if (is.data.frame(dados$user) && "name" %in% names(dados$user)) {
+    dados$user$name
+  } else if (is.list(dados$user) && all(sapply(dados$user, function(x) "name" %in% names(x)))) {
+    sapply(dados$user, function(x) x$name)
+  } else {
+    rep(NA_character_, nrow(dados))
   }
   
   dados <- dados %>%
     mutate(
-      name = case_when(
-        user$name == "kelly.ewers" ~ "Kelly",
-        user$name == "LDR" ~ "Matheus",
-        user$name == "Gustavo Dias" ~ "Consultoria",
-        TRUE ~ user$name
+      responsavel = case_when(
+        user_name == "kelly.ewers" ~ "Kelly",
+        user_name == "LDR" ~ "Matheus", 
+        user_name == "Gustavo Dias" ~ "Consultoria",
+        !is.na(user_name) ~ user_name,
+        TRUE ~ "Desconhecido"
       ),
-      Relevante = ifelse(!is.na(duration) & duration >= 60, 1, 0)
+      Relevante = ifelse(!is.na(duration) & as.numeric(duration) >= 60, 1, 0)
     )
   
   # -------- Agregação de desempenho --------
-  message("Agragando o desempenho...")
+  message("Agregando o desempenho...")
   desempenho <- dados %>%
-    group_by(name) %>%
+    group_by(responsavel) %>%
     summarise(
       ligacoes_totais = n(),
       ligacoes_relevantes = sum(Relevante, na.rm = TRUE),
@@ -239,7 +259,7 @@ api_etl <- function(agendamento) {
   message("Colunas em desempenho antes do join: ", paste(names(desempenho), collapse = ", "))
   
   desempenho <- desempenho %>%
-    left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
+    left_join(agendamentos_df, by = "responsavel") %>%
     mutate(agendamento = coalesce(agendamento, 0))
   
   message("Join realizado com sucesso. Colunas após join: ", paste(names(desempenho), collapse = ", "))
@@ -252,11 +272,11 @@ api_etl <- function(agendamento) {
   
   desempenho <- desempenho %>%
     mutate(
-      meta_ligacoes = ifelse(name %in% metas_na, NA, 120),
-      meta_ligacoes_relevantes = ifelse(name %in% metas_na, NA, 24),
+      meta_ligacoes = ifelse(responsavel %in% metas_na, NA, 120),
+      meta_ligacoes_relevantes = ifelse(responsavel %in% metas_na, NA, 24),
       meta_agendamento = case_when(
-        name %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
-        name == "Matheus" ~ 6/5,
+        responsavel %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
+        responsavel == "Matheus" ~ 6/5,
         TRUE ~ 2
       ),
       atingimento_ligacoes = ifelse(!is.na(meta_ligacoes) & meta_ligacoes != 0, ligacoes_totais / meta_ligacoes, 0),
@@ -311,9 +331,9 @@ desempenho_semana <- function(dados_semana) {
   message("Dados recebidos para processamento semanal:")
   message(paste(capture.output(str(dados_semana)), collapse = "\n"))
   
-  # Verificar se a coluna 'name' existe nos dados
-  if (!"name" %in% names(dados_semana)) {
-    message("AVISO: Coluna 'name' não encontrada nos dados. Colunas disponíveis: ", paste(names(dados_semana), collapse = ", "))
+  # Verificar se a coluna 'responsavel' existe nos dados (CORRIGIDO)
+  if (!"responsavel" %in% names(dados_semana)) {
+    message("AVISO: Coluna 'responsavel' não encontrada nos dados. Colunas disponíveis: ", paste(names(dados_semana), collapse = ", "))
     return(data.frame())
   }
   
@@ -322,16 +342,16 @@ desempenho_semana <- function(dados_semana) {
   dados_semana <- dados_semana %>%
     mutate(
       meta_ligacoes = case_when(
-        name %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
         TRUE ~ meta_ligacoes
       ),
       meta_ligacoes_relevantes = case_when(
-        name %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
         TRUE ~ meta_ligacoes_relevantes
       ),
       meta_agendamento = case_when(
-        name %in% c("Kelly","Priscila Prado","Consultoria") ~ NA_real_,
-        name == "Matheus" ~ 6/5,
+        responsavel %in% c("Kelly","Priscila Prado","Consultoria") ~ NA_real_,
+        responsavel == "Matheus" ~ 6/5,
         TRUE ~ meta_agendamento
       )
     ) %>%
@@ -342,8 +362,8 @@ desempenho_semana <- function(dados_semana) {
   resumir <- function(pessoa) {
     message("Processando pessoa: ", pessoa)
     df <- dados_semana %>%
-      filter(name == pessoa) %>%  # Mudança aqui: usar 'name' ao invés de 'responsavel'
-      group_by(name, meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento) %>%  # Mudança aqui
+      filter(responsavel == pessoa) %>%  # CORRIGIDO: usar 'responsavel'
+      group_by(responsavel, meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento) %>%
       summarise(
         ligacoes_totais = sum(ligacoes_totais, na.rm = TRUE),
         ligacoes_relevantes = sum(ligacoes_relevantes, na.rm = TRUE),
@@ -365,16 +385,14 @@ desempenho_semana <- function(dados_semana) {
     return(df)
   }
   
-  # Lista de responsáveis (usar os mesmos nomes que aparecem na coluna 'name')
+  # Lista de responsáveis
   responsaveis <- c("Bruna Azevedo","Emilin","Maria Luisa","Stela","Kelly","Priscila Prado",
                     "Consultoria","Matheus","Gabriela Moreira","Marcelo")
   
   # Aplica resumir a todos e combina
   message("Combinando os dados com novas metas semanais...")
   resultado <- bind_rows(lapply(responsaveis, resumir)) %>%
-    arrange(desc(agendamento)) %>%
-    # Renomear a coluna 'name' para 'responsavel' para manter consistência com o frontend
-    rename(responsavel = name)
+    arrange(desc(agendamento))
   
   message("Processamento semanal concluído. Registros resultantes: ", nrow(resultado))
   return(resultado)
