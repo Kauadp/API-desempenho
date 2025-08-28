@@ -9,6 +9,35 @@ library(tibble)
 library(httr)
 
 # --------------------
+# Configuração CORS
+# --------------------
+
+#* @filter cors
+cors <- function(req, res) {
+  res$setHeader("Access-Control-Allow-Origin", "*")
+  res$setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+  res$setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+  res$setHeader("Access-Control-Max-Age", "86400")
+  
+  if (req$REQUEST_METHOD == "OPTIONS") {
+    res$status <- 200
+    return(list())
+  } else {
+    plumber::forward()
+  }
+}
+
+#* @options /*
+function(req, res) {
+  res$status <- 200
+  return(list())
+}
+
+
+#* @apiTitle API de Desempenho de Vendas
+#* @apiDescription Esta API atualiza e retorna os dados de desempenho de vendas com autenticação Google Sheets.
+
+# --------------------
 # Função de ETL
 # --------------------
 api_etl <- function(agendamento) {
@@ -311,8 +340,7 @@ desempenho_semana <- function(dados_semana) {
   return(resultado)
 }
 
-#* @apiTitle API de Desempenho de Vendas
-#* @apiDescription Esta API atualiza e retorna os dados de desempenho de vendas com autenticação Google Sheets.
+
 
 # --------------------
 # Endpoint de Autenticação
