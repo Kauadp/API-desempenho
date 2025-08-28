@@ -12,62 +12,72 @@ library(httr)
 # Função de ETL
 # --------------------
 api_etl <- function(agendamento) {
+  message("=== Iniciando ETL do CRM ===")
+  
+  # -------- Datas com fuso horário da API --------
+  data_hoje_api <- Sys.time() - hours(3)   # Ajuste GMT-3
+  data_hoje <- as.Date(data_hoje_api)
+  start <- paste(data_hoje, "00:00:00")
+  end <- paste(data_hoje, "23:59:00")
+  
+  # -------- Configuração da API --------
   full_url <- "https://api.leads2b.com/v2/calls"
   api_key <- Sys.getenv("API_KEY_V2")
   if (api_key == "") stop("API_KEY_V2 não definida no ambiente")
-  headers <- httr::add_headers(Authorization = paste("Bearer", api_key))
+  headers <- add_headers(Authorization = paste("Bearer", api_key))
   
   dados <- data.frame()
   cursor_atual <- NULL
   limite_por_pagina <- 100
-  data_hoje <- Sys.Date()
-  start <- paste(data_hoje, "00:00:00")
-  end <- paste(data_hoje, "23:59:00")
   
   # -------- Paginação --------
   repeat {
     query_params <- list(start = start, end = end, limit = limite_por_pagina, cursor = cursor_atual)
-    response <- tryCatch(httr::GET(full_url, config = headers, query = query_params),
-                         error = function(e) stop("Erro ao consultar API do CRM: ", e$message))
     
-    if (httr::status_code(response) != 200) {
-      stop(paste("Erro na requisição da API:", httr::status_code(response)))
+    response <- tryCatch(
+      GET(full_url, config = headers, query = query_params),
+      error = function(e) stop("Erro ao consultar API do CRM: ", e$message)
+    )
+    
+    if (status_code(response) != 200) stop(paste("Erro na requisição da API:", status_code(response)))
+    
+    dados_paginados <- fromJSON(content(response, "text", encoding = "UTF-8"))
+    
+    # Checar se há dados
+    if (is.null(dados_paginados$data) || nrow(dados_paginados$data) == 0) {
+      message("Não há dados para o dia ", data_hoje)
+      break
     }
     
-    dados_paginados <- jsonlite::fromJSON(httr::content(response, "text", encoding = "UTF-8"))
+    dados <- bind_rows(dados, dados_paginados$data)
     
-    if (!"data" %in% names(dados_paginados)) {
-      stop("API retornou dados inesperados: coluna 'data' não encontrada")
-    }
-    
-    dados_da_pagina <- dados_paginados$data
     next_cursor <- dados_paginados$next_cursor
-    
-    if (!is.null(dados_da_pagina) && nrow(dados_da_pagina) > 0) {
-      dados <- dplyr::bind_rows(dados, dados_da_pagina)
+    if (is.null(next_cursor) || next_cursor == "") {
+      message("Paginação concluída. Total de registros únicos obtidos: ", nrow(dados))
+      break
     }
     
-    if (is.null(next_cursor) || next_cursor == "") break
     cursor_atual <- next_cursor
   }
   
-  dados <- dplyr::distinct(dados, id_call, .keep_all = TRUE)
-  message(paste("Total de registros únicos obtidos:", nrow(dados)))
+  # Se não houver dados, retornar vazio
+  if (nrow(dados) == 0) return(data.frame())
+  
+  dados <- distinct(dados, id_call, .keep_all = TRUE)
   
   # -------- Tratamento de datas --------
   if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada")
   dados$start <- as.Date(substr(dados$start, 1, 10))
-  if (all(is.na(dados$start))) stop("Todos os valores de 'start' são NA")
   
-  # -------- Ajuste de nomes --------
+  # -------- Ajuste de nomes e relevância --------
   if (!"user" %in% names(dados) || !"name" %in% names(dados$user)) {
     dados$user$name <- NA_character_
     message("Coluna 'user$name' não encontrada, preenchida com NA")
   }
   
   dados <- dados %>%
-    dplyr::mutate(
-      name = dplyr::case_when(
+    mutate(
+      name = case_when(
         user$name == "kelly.ewers" ~ "Kelly",
         user$name == "LDR" ~ "Matheus",
         user$name == "Gustavo Dias" ~ "Consultoria",
@@ -76,42 +86,44 @@ api_etl <- function(agendamento) {
       Relevante = ifelse(!is.na(duration) & duration >= 60, 1, 0)
     )
   
+  # -------- Agregação de desempenho --------
   desempenho <- dados %>%
-    dplyr::group_by(name) %>%
-    dplyr::summarise(
+    group_by(name) %>%
+    summarise(
       ligacoes_totais = n(),
       ligacoes_relevantes = sum(Relevante, na.rm = TRUE),
       .groups = "drop"
     )
   
   # -------- Agendamentos --------
-  agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") %>%
-    dplyr::mutate(agendamento = as.numeric(agendamento))
+  agendamentos_df <- enframe(agendamento, name = "responsavel", value = "agendamento") %>%
+    mutate(agendamento = as.numeric(agendamento))
   
   desempenho <- desempenho %>%
-    dplyr::left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
-    dplyr::mutate(agendamento = coalesce(agendamento, 0))
+    left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
+    mutate(agendamento = coalesce(agendamento, 0))
   
-  # -------- Metas --------
+  # -------- Metas e indicadores --------
   metas_na <- c("Kelly", "Priscila Prado", "Matheus", "Consultoria")
+  
   desempenho <- desempenho %>%
-    dplyr::mutate(
+    mutate(
       meta_ligacoes = ifelse(name %in% metas_na, NA, 120),
       meta_ligacoes_relevantes = ifelse(name %in% metas_na, NA, 24),
-      meta_agendamento = dplyr::case_when(
+      meta_agendamento = case_when(
         name %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
         name == "Matheus" ~ 6/5,
         TRUE ~ 2
       ),
-      atingimento_ligacoes = ifelse(!is.na(meta_ligacoes) & meta_ligacoes!=0, ligacoes_totais/meta_ligacoes, 0),
-      atingimento_ligacoes_relevantes = ifelse(!is.na(meta_ligacoes_relevantes) & meta_ligacoes_relevantes!=0, ligacoes_relevantes/meta_ligacoes_relevantes, 0),
-      atingimento_agendamento = ifelse(!is.na(meta_agendamento) & meta_agendamento!=0, agendamento/meta_agendamento, 0),
-      ligacao_x_ligacao_relevante = ifelse(ligacoes_totais!=0, ligacoes_relevantes/ligacoes_totais, 0),
-      ligacao_relevante_x_agendamento = ifelse(ligacoes_relevantes!=0, agendamento/ligacoes_relevantes, 0),
-      ligacao_x_agendamento = ifelse(ligacoes_totais!=0, agendamento/ligacoes_totais, 0),
+      atingimento_ligacoes = ifelse(!is.na(meta_ligacoes) & meta_ligacoes != 0, ligacoes_totais / meta_ligacoes, 0),
+      atingimento_ligacoes_relevantes = ifelse(!is.na(meta_ligacoes_relevantes) & meta_ligacoes_relevantes != 0, ligacoes_relevantes / meta_ligacoes_relevantes, 0),
+      atingimento_agendamento = ifelse(!is.na(meta_agendamento) & meta_agendamento != 0, agendamento / meta_agendamento, 0),
+      ligacao_x_ligacao_relevante = ifelse(ligacoes_totais != 0, ligacoes_relevantes / ligacoes_totais, 0),
+      ligacao_relevante_x_agendamento = ifelse(ligacoes_relevantes != 0, agendamento / ligacoes_relevantes, 0),
+      ligacao_x_agendamento = ifelse(ligacoes_totais != 0, agendamento / ligacoes_totais, 0),
       data = data_hoje
     ) %>%
-    dplyr::arrange(desc(agendamento))
+    arrange(desc(agendamento))
   
   # -------- Google Sheets --------
   sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
@@ -122,14 +134,14 @@ api_etl <- function(agendamento) {
     
     if ("data" %in% names(dados_historicos)) {
       dados_historicos$data <- as.Date(dados_historicos$data)
-      dados_filtrados <- dados_historicos %>% filter(data != data_hoje)
+      dados_filtrados <- filter(dados_historicos, data != data_hoje)
     } else {
       dados_filtrados <- data.frame()
     }
     
     bind_rows(dados_filtrados, desempenho)
     
-  }, error=function(e){
+  }, error = function(e){
     message("Falha ao ler dados históricos: ", e$message)
     desempenho
   })
@@ -137,7 +149,7 @@ api_etl <- function(agendamento) {
   tryCatch({
     write_sheet(dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
     message("Dados salvos no Google Sheets com sucesso!")
-  }, error=function(e){
+  }, error = function(e){
     message("Erro ao salvar no Google Sheets: ", e$message)
   })
   
