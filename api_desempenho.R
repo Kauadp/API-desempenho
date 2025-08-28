@@ -98,14 +98,84 @@ api_etl <- function(agendamento) {
       .groups = "drop"
     )
   
-  # -------- Agendamentos --------
+  # -------- Agendamentos (CORRIGIDO) --------
   message("Configurando os agendamentos...")
-  agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") %>%
-    mutate(agendamento = as.numeric(agendamento))
+  message("Estrutura dos dados de agendamento recebidos:")
+  message(paste(capture.output(str(agendamento)), collapse = "\n"))
+  
+  # Tratamento mais robusto dos dados de agendamento
+  if (is.null(agendamento) || length(agendamento) == 0) {
+    message("Nenhum agendamento fornecido, usando valores padrão")
+    agendamentos_df <- data.frame(
+      responsavel = character(0),
+      agendamento = numeric(0),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    message("Processando agendamentos...")
+    
+    # Verificar se é uma lista ou vetor nomeado
+    if (is.list(agendamento)) {
+      message("Agendamento é uma lista")
+      # Converter lista para data.frame
+      nomes_responsaveis <- names(agendamento)
+      valores_agendamentos <- as.numeric(unlist(agendamento))
+      
+      if (is.null(nomes_responsaveis)) {
+        message("ERRO: Lista de agendamentos sem nomes")
+        agendamentos_df <- data.frame(responsavel = character(0), agendamento = numeric(0), stringsAsFactors = FALSE)
+      } else {
+        agendamentos_df <- data.frame(
+          responsavel = nomes_responsaveis,
+          agendamento = valores_agendamentos,
+          stringsAsFactors = FALSE
+        )
+        message("Agendamentos convertidos com sucesso:")
+        message(paste(capture.output(print(agendamentos_df)), collapse = "\n"))
+      }
+    } else if (is.vector(agendamento) && !is.null(names(agendamento))) {
+      message("Agendamento é um vetor nomeado")
+      # Vetor nomeado
+      agendamentos_df <- data.frame(
+        responsavel = names(agendamento),
+        agendamento = as.numeric(agendamento),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      message("Tentando usar enframe como fallback...")
+      # Tentar usar enframe como fallback
+      tryCatch({
+        agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") %>%
+          mutate(agendamento = as.numeric(agendamento)) %>%
+          as.data.frame()
+      }, error = function(e) {
+        message("Erro ao processar agendamentos com enframe: ", e$message)
+        message("Tipo dos dados de agendamento: ", class(agendamento))
+        message("Estrutura dos dados de agendamento: ", paste(capture.output(str(agendamento)), collapse = "\n"))
+        # Usar data.frame vazio como fallback
+        agendamentos_df <- data.frame(
+          responsavel = character(0),
+          agendamento = numeric(0),
+          stringsAsFactors = FALSE
+        )
+      })
+    }
+  }
+  
+  message("DataFrame de agendamentos final:")
+  message(paste(capture.output(print(agendamentos_df)), collapse = "\n"))
+  
+  # Fazer o join com os dados de desempenho
+  message("Realizando join entre desempenho e agendamentos...")
+  message("Colunas em desempenho antes do join: ", paste(names(desempenho), collapse = ", "))
+  
   desempenho <- desempenho %>%
-    left_join(agendamentos_df, by = "responsavel") %>%
+    left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
     mutate(agendamento = coalesce(agendamento, 0))
   
+  message("Join realizado com sucesso. Colunas após join: ", paste(names(desempenho), collapse = ", "))
+  message("Dados após join:")
+  message(paste(capture.output(str(desempenho)), collapse = "\n"))
   
   # -------- Metas e indicadores --------
   message("Ajustando as metas...")
@@ -164,26 +234,35 @@ api_etl <- function(agendamento) {
 }
 
 
-
 # --------------------
 # Função de ETL Semanal
 # --------------------
 desempenho_semana <- function(dados_semana) {
+  message("=== Iniciando processamento semanal ===")
+  message("Dados recebidos para processamento semanal:")
+  message(paste(capture.output(str(dados_semana)), collapse = "\n"))
+  
+  # Verificar se a coluna 'name' existe nos dados
+  if (!"name" %in% names(dados_semana)) {
+    message("AVISO: Coluna 'name' não encontrada nos dados. Colunas disponíveis: ", paste(names(dados_semana), collapse = ", "))
+    return(data.frame())
+  }
+  
   # Ajusta metas especiais antes da multiplicação
   message("Ajustando as metas especiais...")
   dados_semana <- dados_semana %>%
     mutate(
       meta_ligacoes = case_when(
-        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        name %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
         TRUE ~ meta_ligacoes
       ),
       meta_ligacoes_relevantes = case_when(
-        responsavel %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
+        name %in% c("Kelly","Priscila Prado","Matheus","Consultoria") ~ NA_real_,
         TRUE ~ meta_ligacoes_relevantes
       ),
       meta_agendamento = case_when(
-        responsavel %in% c("Kelly","Priscila Prado","Consultoria") ~ NA_real_,
-        responsavel == "Matheus" ~ 6/5,
+        name %in% c("Kelly","Priscila Prado","Consultoria") ~ NA_real_,
+        name == "Matheus" ~ 6/5,
         TRUE ~ meta_agendamento
       )
     ) %>%
@@ -192,9 +271,10 @@ desempenho_semana <- function(dados_semana) {
   
   # Função para resumir o desempenho por pessoa
   resumir <- function(pessoa) {
+    message("Processando pessoa: ", pessoa)
     df <- dados_semana %>%
-      filter(responsavel == pessoa) %>%
-      group_by(responsavel, meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento) %>%
+      filter(name == pessoa) %>%  # Mudança aqui: usar 'name' ao invés de 'responsavel'
+      group_by(name, meta_ligacoes, meta_ligacoes_relevantes, meta_agendamento) %>%  # Mudança aqui
       summarise(
         ligacoes_totais = sum(ligacoes_totais, na.rm = TRUE),
         ligacoes_relevantes = sum(ligacoes_relevantes, na.rm = TRUE),
@@ -216,70 +296,19 @@ desempenho_semana <- function(dados_semana) {
     return(df)
   }
   
-  # Lista de responsáveis
+  # Lista de responsáveis (usar os mesmos nomes que aparecem na coluna 'name')
   responsaveis <- c("Bruna Azevedo","Emilin","Maria Luisa","Stela","Kelly","Priscila Prado",
                     "Consultoria","Matheus","Gabriela Moreira","Marcelo")
   
   # Aplica resumir a todos e combina
   message("Combinando os dados com novas metas semanais...")
   resultado <- bind_rows(lapply(responsaveis, resumir)) %>%
-    arrange(desc(agendamento))
+    arrange(desc(agendamento)) %>%
+    # Renomear a coluna 'name' para 'responsavel' para manter consistência com o frontend
+    rename(responsavel = name)
   
+  message("Processamento semanal concluído. Registros resultantes: ", nrow(resultado))
   return(resultado)
-}
-
-
-# Configuração global da autenticação
-setup_google_auth <- function(credentials_json = NULL) {
-  tryCatch({
-    if (!is.null(credentials_json)) {
-      if (is.character(credentials_json)) {
-        temp_file <- tempfile(fileext = ".json")
-        writeLines(credentials_json, temp_file)
-        credentials_path <- temp_file
-      } else {
-        credentials_path <- credentials_json
-      }
-    } else if (Sys.getenv("GOOGLE_CREDENTIALS_JSON") != "") {
-      temp_file <- tempfile(fileext = ".json")
-      writeLines(Sys.getenv("GOOGLE_CREDENTIALS_JSON"), temp_file)
-      credentials_path <- temp_file
-    } else if (file.exists("credentials.json")) {
-      credentials_path <- "credentials.json"
-    } else {
-      stop("Nenhuma credencial do Google encontrada")
-    }
-    
-    gs4_auth(path = credentials_path)
-    drive_auth(path = credentials_path)
-    
-    if (exists("temp_file") && file.exists(temp_file)) {
-      unlink(temp_file)
-    }
-    
-    cat("Autenticação Google configurada com sucesso\n")
-    return(TRUE)
-    
-  }, error = function(e) {
-    cat("Erro na configuração da autenticação:", e$message, "\n")
-    return(FALSE)
-  })
-}
-
-init_auth <- setup_google_auth()
-
-#* @filter cors
-cors <- function(req, res) {
-  res$setHeader("Access-Control-Allow-Origin", "*")
-  res$setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-  res$setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
-  
-  if (req$REQUEST_METHOD == "OPTIONS") {
-    res$status <- 200
-    return(list())
-  } else {
-    plumber::forward()
-  }
 }
 
 #* @apiTitle API de Desempenho de Vendas
@@ -322,55 +351,85 @@ function(req, res) {
 }
 
 # --------------------
-# Endpoint POST desempenho-diario
+# Endpoint POST desempenho-diario (melhorado)
 # --------------------
 #* @post /desempenho-diario
 #* @serializer unboxedJSON
 function(req, res) {
   request_data <- tryCatch({
     if (!is.null(req$postBody) && req$postBody != "") {
-      jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
+      parsed <- jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
+      message("Dados recebidos no endpoint diário: ", jsonlite::toJSON(parsed, auto_unbox = TRUE))
+      parsed
     } else {
+      message("Nenhum dado recebido no POST body")
       list()
     }
   }, error = function(e) {
+    message("Erro ao processar POST body: ", e$message)
     res$status <- 400
     return(list(erro = paste("Erro ao processar dados:", e$message)))
   })
   
   tryCatch({
-    dados_completos <- api_etl(request_data$agendamentos)
+    # Verificar se agendamentos está presente
+    agendamentos <- if ("agendamentos" %in% names(request_data)) {
+      request_data$agendamentos
+    } else {
+      message("Campo 'agendamentos' não encontrado, usando lista vazia")
+      list()
+    }
+    
+    message("Agendamentos processados: ", jsonlite::toJSON(agendamentos, auto_unbox = TRUE))
+    
+    dados_completos <- api_etl(agendamentos)
     dados_completos$data <- as.Date(dados_completos$data)
-    cat("Filtrando os dados pelo dia", Sys.Date())
+    
+    message("Filtrando os dados pelo dia ", Sys.Date())
     desempenho_diario <- dados_completos %>%
       filter(data == Sys.Date())
     
     return(desempenho_diario)
   }, error = function(e) {
+    message("Erro no processamento ETL diário: ", e$message)
     res$status <- 500
     return(list(erro = paste("Erro interno:", e$message)))
   })
 }
 
 # --------------------
-# Endpoint POST desempenho-semanal
+# Endpoint POST desempenho-semanal (melhorado)
 # --------------------
 #* @post /desempenho-semanal
 #* @serializer unboxedJSON
 function(req, res) {
   request_data <- tryCatch({
     if (!is.null(req$postBody) && req$postBody != "") {
-      jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
+      parsed <- jsonlite::fromJSON(req$postBody, simplifyVector = FALSE)
+      message("Dados recebidos no endpoint semanal: ", jsonlite::toJSON(parsed, auto_unbox = TRUE))
+      parsed
     } else {
+      message("Nenhum dado recebido no POST body")
       list()
     }
   }, error = function(e) {
+    message("Erro ao processar POST body: ", e$message)
     res$status <- 400
     return(list(erro = paste("Erro ao processar dados:", e$message)))
   })
   
   tryCatch({
-    dados_completos <- api_etl(request_data$agendamentos)
+    # Verificar se agendamentos está presente
+    agendamentos <- if ("agendamentos" %in% names(request_data)) {
+      request_data$agendamentos
+    } else {
+      message("Campo 'agendamentos' não encontrado, usando lista vazia")
+      list()
+    }
+    
+    message("Agendamentos processados: ", jsonlite::toJSON(agendamentos, auto_unbox = TRUE))
+    
+    dados_completos <- api_etl(agendamentos)
     dados_completos$data <- as.Date(dados_completos$data)
     
     inicio_da_semana <- floor_date(Sys.Date(), "week", week_start = 1)
@@ -381,6 +440,7 @@ function(req, res) {
     
     return(desempenho_final)
   }, error = function(e) {
+    message("Erro no processamento ETL semanal: ", e$message)
     res$status <- 500
     return(list(erro = paste("Erro interno:", e$message)))
   })
