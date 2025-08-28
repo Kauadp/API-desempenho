@@ -95,7 +95,8 @@ api_etl <- function(agendamento) {
   if (api_key == "") stop("API_KEY_V2 não definida no ambiente")
   headers <- add_headers(Authorization = paste("Bearer", api_key))
   
-  dados <- data.frame()
+  # Inicializar dados como NULL para verificação adequada
+  dados <- NULL
   cursor_atual <- NULL
   limite_por_pagina <- 100
   
@@ -105,20 +106,58 @@ api_etl <- function(agendamento) {
     
     response <- tryCatch(
       GET(full_url, config = headers, query = query_params),
-      error = function(e) stop("Erro ao consultar API do CRM: ", e$message)
+      error = function(e) {
+        message("ERRO detalhado na consulta da API: ", e$message)
+        stop("Erro ao consultar API do CRM: ", e$message)
+      }
     )
     
-    if (status_code(response) != 200) stop(paste("Erro na requisição da API:", status_code(response)))
+    message("Status da resposta da API: ", status_code(response))
     
-    dados_paginados <- fromJSON(content(response, "text", encoding = "UTF-8"))
+    if (status_code(response) != 200) {
+      message("Erro na API - Status Code: ", status_code(response))
+      message("Conteúdo da resposta: ", content(response, "text"))
+      stop(paste("Erro na requisição da API:", status_code(response)))
+    }
+    
+    dados_paginados <- tryCatch({
+      fromJSON(content(response, "text", encoding = "UTF-8"))
+    }, error = function(e) {
+      message("Erro ao fazer parse do JSON: ", e$message)
+      message("Conteúdo bruto: ", substr(content(response, "text"), 1, 500))
+      stop("Erro no parse JSON: ", e$message)
+    })
+    
+    message("Estrutura dos dados recebidos da API:")
+    message("- dados_paginados é NULL: ", is.null(dados_paginados))
+    message("- dados_paginados$data é NULL: ", is.null(dados_paginados$data))
+    if (!is.null(dados_paginados$data)) {
+      message("- Tipo de dados_paginados$data: ", class(dados_paginados$data))
+      message("- Length de dados_paginados$data: ", length(dados_paginados$data))
+      if (is.data.frame(dados_paginados$data)) {
+        message("- Nrow de dados_paginados$data: ", nrow(dados_paginados$data))
+        message("- Ncol de dados_paginados$data: ", ncol(dados_paginados$data))
+      }
+    }
     
     # Checar se há dados
-    if (is.null(dados_paginados$data) || nrow(dados_paginados$data) == 0) {
+    if (is.null(dados_paginados$data) || length(dados_paginados$data) == 0) {
       message("Não há dados para o dia ", data_hoje)
       break
     }
     
-    dados <- bind_rows(dados, dados_paginados$data)
+    # Verificar se dados_paginados$data é um data.frame válido
+    if (is.data.frame(dados_paginados$data) && nrow(dados_paginados$data) == 0) {
+      message("Data.frame vazio retornado para o dia ", data_hoje)
+      break
+    }
+    
+    # Se chegou até aqui, há dados válidos
+    if (is.null(dados)) {
+      dados <- dados_paginados$data
+    } else {
+      dados <- bind_rows(dados, dados_paginados$data)
+    }
     
     next_cursor <- dados_paginados$next_cursor
     if (is.null(next_cursor) || next_cursor == "") {
@@ -130,9 +169,94 @@ api_etl <- function(agendamento) {
   }
   
   # Se não houver dados, retornar vazio mas estruturado
-  if (nrow(dados) == 0) {
+  if (is.null(dados) || nrow(dados) == 0) {
     message("Não há dados para processar - retornando estrutura vazia")
-    dados_vazios <- data.frame(
+    
+    # Processar agendamentos mesmo sem dados de ligações
+    agendamentos_df <- data.frame(responsavel = character(0), agendamento = numeric(0), stringsAsFactors = FALSE)
+    
+    if (!is.null(agendamento) && length(agendamento) > 0) {
+      message("Processando agendamentos sem dados de ligações...")
+      
+      if (is.list(agendamento) && !is.null(names(agendamento))) {
+        agendamentos_df <- data.frame(
+          responsavel = names(agendamento),
+          agendamento = as.numeric(unlist(agendamento)),
+          stringsAsFactors = FALSE
+        )
+      } else if (is.vector(agendamento) && !is.null(names(agendamento))) {
+        agendamentos_df <- data.frame(
+          responsavel = names(agendamento),
+          agendamento = as.numeric(agendamento),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+    
+    # Criar estrutura básica com agendamentos (se houver)
+    if (nrow(agendamentos_df) > 0) {
+      dados_vazios <- agendamentos_df %>%
+        mutate(
+          ligacoes_totais = 0,
+          ligacoes_relevantes = 0,
+          meta_ligacoes = case_when(
+            responsavel %in% c("Kelly", "Priscila Prado", "Matheus", "Consultoria") ~ NA_real_,
+            TRUE ~ 120
+          ),
+          meta_ligacoes_relevantes = case_when(
+            responsavel %in% c("Kelly", "Priscila Prado", "Matheus", "Consultoria") ~ NA_real_,
+            TRUE ~ 24
+          ),
+          meta_agendamento = case_when(
+            responsavel %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
+            responsavel == "Matheus" ~ 6/5,
+            TRUE ~ 2
+          ),
+          atingimento_ligacoes = 0,
+          atingimento_ligacoes_relevantes = 0,
+          atingimento_agendamento = case_when(
+            is.na(meta_agendamento) | meta_agendamento == 0 ~ 0,
+            TRUE ~ agendamento / meta_agendamento
+          ),
+          ligacao_x_ligacao_relevante = 0,
+          ligacao_relevante_x_agendamento = 0,
+          ligacao_x_agendamento = 0,
+          data = data_hoje
+        ) %>%
+        arrange(desc(agendamento))
+    } else {
+      # Estrutura completamente vazia
+      dados_vazios <- data.frame(
+        responsavel = character(0),
+        ligacoes_totais = numeric(0),
+        ligacoes_relevantes = numeric(0),
+        agendamento = numeric(0),
+        meta_ligacoes = numeric(0),
+        meta_ligacoes_relevantes = numeric(0),
+        meta_agendamento = numeric(0),
+        atingimento_ligacoes = numeric(0),
+        atingimento_ligacoes_relevantes = numeric(0),
+        atingimento_agendamento = numeric(0),
+        ligacao_x_ligacao_relevante = numeric(0),
+        ligacao_relevante_x_agendamento = numeric(0),
+        ligacao_x_agendamento = numeric(0),
+        data = as.Date(character(0)),
+        stringsAsFactors = FALSE
+      )
+    }
+    
+    return(dados_vazios)
+  }
+  
+  dados <- distinct(dados, id_call, .keep_all = TRUE)
+  
+  # -------- Tratamento de datas --------
+  message("Tratando as datas...")
+  # Verificação adicional antes de processar
+  if (!"start" %in% names(dados)) {
+    message("AVISO: Coluna 'start' não encontrada nos dados. Colunas disponíveis: ", paste(names(dados), collapse = ", "))
+    # Se não há coluna start, algo está errado com a estrutura dos dados
+    return(data.frame(
       responsavel = character(0),
       ligacoes_totais = numeric(0),
       ligacoes_relevantes = numeric(0),
@@ -148,15 +272,9 @@ api_etl <- function(agendamento) {
       ligacao_x_agendamento = numeric(0),
       data = as.Date(character(0)),
       stringsAsFactors = FALSE
-    )
-    return(dados_vazios)
+    ))
   }
   
-  dados <- distinct(dados, id_call, .keep_all = TRUE)
-  
-  # -------- Tratamento de datas --------
-  message("Tratando as datas...")
-  if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada")
   dados$start <- as.Date(substr(dados$start, 1, 10))
   
   # -------- Ajuste de nomes e relevância --------
