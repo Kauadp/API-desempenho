@@ -100,12 +100,12 @@ api_etl <- function(agendamento) {
   
   # -------- Agendamentos --------
   message("Configurando os agendamentos...")
-  agendamentos_df <- enframe(agendamento, name = "responsavel", value = "agendamento") %>%
+  agendamentos_df <- tibble::enframe(agendamento, name = "responsavel", value = "agendamento") %>%
     mutate(agendamento = as.numeric(agendamento))
-  
   desempenho <- desempenho %>%
-    left_join(agendamentos_df, by = c("name" = "responsavel")) %>%
+    left_join(agendamentos_df, by = "responsavel") %>%
     mutate(agendamento = coalesce(agendamento, 0))
+  
   
   # -------- Metas e indicadores --------
   message("Ajustando as metas...")
