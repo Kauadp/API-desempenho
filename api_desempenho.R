@@ -66,10 +66,12 @@ api_etl <- function(agendamento) {
   dados <- distinct(dados, id_call, .keep_all = TRUE)
   
   # -------- Tratamento de datas --------
+  message("Tratando as datas...")
   if (!"start" %in% names(dados)) stop("Coluna 'start' não encontrada")
   dados$start <- as.Date(substr(dados$start, 1, 10))
   
   # -------- Ajuste de nomes e relevância --------
+  message("Ajustando os nomes...")
   if (!"user" %in% names(dados) || !"name" %in% names(dados$user)) {
     dados$user$name <- NA_character_
     message("Coluna 'user$name' não encontrada, preenchida com NA")
@@ -87,6 +89,7 @@ api_etl <- function(agendamento) {
     )
   
   # -------- Agregação de desempenho --------
+  message("Agragando o desempenho...")
   desempenho <- dados %>%
     group_by(name) %>%
     summarise(
@@ -96,6 +99,7 @@ api_etl <- function(agendamento) {
     )
   
   # -------- Agendamentos --------
+  message("Configurando os agendamentos...")
   agendamentos_df <- enframe(agendamento, name = "responsavel", value = "agendamento") %>%
     mutate(agendamento = as.numeric(agendamento))
   
@@ -104,6 +108,7 @@ api_etl <- function(agendamento) {
     mutate(agendamento = coalesce(agendamento, 0))
   
   # -------- Metas e indicadores --------
+  message("Ajustando as metas...")
   metas_na <- c("Kelly", "Priscila Prado", "Matheus", "Consultoria")
   
   desempenho <- desempenho %>%
@@ -126,6 +131,7 @@ api_etl <- function(agendamento) {
     arrange(desc(agendamento))
   
   # -------- Google Sheets --------
+  message("Lendo os dados históricos da base de dados...")
   sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
   
   dados_historicos_atualizados <- tryCatch({
