@@ -12,8 +12,6 @@ library(httr)
 # Função de ETL
 # --------------------
 api_etl <- function(agendamento) {
-  message("=== Iniciando ETL do CRM ===")
-  
   full_url <- "https://api.leads2b.com/v2/calls"
   api_key <- Sys.getenv("API_KEY_V2")
   if (api_key == "") stop("API_KEY_V2 não definida no ambiente")
