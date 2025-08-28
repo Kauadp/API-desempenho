@@ -8,6 +8,46 @@ library(lubridate) # importante para floor_date e manipulação de datas
 library(tibble)
 library(httr)
 
+
+# Configuração global da autenticação
+setup_google_auth <- function(credentials_json = NULL) {
+  tryCatch({
+    if (!is.null(credentials_json)) {
+      if (is.character(credentials_json)) {
+        temp_file <- tempfile(fileext = ".json")
+        writeLines(credentials_json, temp_file)
+        credentials_path <- temp_file
+      } else {
+        credentials_path <- credentials_json
+      }
+    } else if (Sys.getenv("GOOGLE_CREDENTIALS_JSON") != "") {
+      temp_file <- tempfile(fileext = ".json")
+      writeLines(Sys.getenv("GOOGLE_CREDENTIALS_JSON"), temp_file)
+      credentials_path <- temp_file
+    } else if (file.exists("credentials.json")) {
+      credentials_path <- "credentials.json"
+    } else {
+      stop("Nenhuma credencial do Google encontrada")
+    }
+    
+    gs4_auth(path = credentials_path)
+    drive_auth(path = credentials_path)
+    
+    if (exists("temp_file") && file.exists(temp_file)) {
+      unlink(temp_file)
+    }
+    
+    cat("Autenticação Google configurada com sucesso\n")
+    return(TRUE)
+    
+  }, error = function(e) {
+    cat("Erro na configuração da autenticação:", e$message, "\n")
+    return(FALSE)
+  })
+}
+
+init_auth <- setup_google_auth()
+
 # --------------------
 # Configuração CORS
 # --------------------
@@ -339,7 +379,6 @@ desempenho_semana <- function(dados_semana) {
   message("Processamento semanal concluído. Registros resultantes: ", nrow(resultado))
   return(resultado)
 }
-
 
 
 # --------------------
