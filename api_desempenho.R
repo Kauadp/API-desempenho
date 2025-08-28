@@ -129,8 +129,28 @@ api_etl <- function(agendamento) {
     cursor_atual <- next_cursor
   }
   
-  # Se não houver dados, retornar vazio
-  if (nrow(dados) == 0) return(data.frame())
+  # Se não houver dados, retornar vazio mas estruturado
+  if (nrow(dados) == 0) {
+    message("Não há dados para processar - retornando estrutura vazia")
+    dados_vazios <- data.frame(
+      responsavel = character(0),
+      ligacoes_totais = numeric(0),
+      ligacoes_relevantes = numeric(0),
+      agendamento = numeric(0),
+      meta_ligacoes = numeric(0),
+      meta_ligacoes_relevantes = numeric(0),
+      meta_agendamento = numeric(0),
+      atingimento_ligacoes = numeric(0),
+      atingimento_ligacoes_relevantes = numeric(0),
+      atingimento_agendamento = numeric(0),
+      ligacao_x_ligacao_relevante = numeric(0),
+      ligacao_relevante_x_agendamento = numeric(0),
+      ligacao_x_agendamento = numeric(0),
+      data = as.Date(character(0)),
+      stringsAsFactors = FALSE
+    )
+    return(dados_vazios)
+  }
   
   dados <- distinct(dados, id_call, .keep_all = TRUE)
   
@@ -142,39 +162,60 @@ api_etl <- function(agendamento) {
   # -------- Ajuste de nomes e relevância --------
   message("Ajustando os nomes...")
   
-  # Verificar e tratar a estrutura user
-  if (!"user" %in% names(dados)) {
-    dados$user <- list(name = rep(NA_character_, nrow(dados)))
-  } else if (is.null(dados$user) || all(is.na(dados$user))) {
-    dados$user <- list(name = rep(NA_character_, nrow(dados)))
-  } else if (!"name" %in% names(dados$user)) {
-    # Se user existe mas não tem name, criar name
-    if (is.data.frame(dados$user)) {
-      dados$user$name <- NA_character_
-    } else {
-      dados$user <- list(name = rep(NA_character_, nrow(dados)))
-    }
+  # Verificar se há coluna duration
+  if (!"duration" %in% names(dados)) {
+    dados$duration <- NA_real_
   }
   
-  # Extrair o nome do usuário de forma segura
-  user_name <- if (is.data.frame(dados$user) && "name" %in% names(dados$user)) {
-    dados$user$name
-  } else if (is.list(dados$user) && all(sapply(dados$user, function(x) "name" %in% names(x)))) {
-    sapply(dados$user, function(x) x$name)
-  } else {
-    rep(NA_character_, nrow(dados))
+  # Verificar e tratar a estrutura user
+  user_name <- rep(NA_character_, nrow(dados))
+  
+  if ("user" %in% names(dados) && !is.null(dados$user) && !all(is.na(dados$user))) {
+    tryCatch({
+      if (is.data.frame(dados$user) && "name" %in% names(dados$user)) {
+        user_name <- ifelse(is.na(dados$user$name), NA_character_, as.character(dados$user$name))
+      } else if (is.list(dados$user)) {
+        # Verificar se todos os elementos da lista têm 'name'
+        has_name <- sapply(dados$user, function(x) {
+          if (is.null(x) || is.na(x)) return(FALSE)
+          if (is.list(x)) return("name" %in% names(x))
+          return(FALSE)
+        })
+        
+        if (any(has_name)) {
+          user_name <- sapply(dados$user, function(x) {
+            if (is.null(x) || is.na(x)) return(NA_character_)
+            if (is.list(x) && "name" %in% names(x)) {
+              return(ifelse(is.null(x$name) || is.na(x$name), NA_character_, as.character(x$name)))
+            }
+            return(NA_character_)
+          })
+        }
+      }
+    }, error = function(e) {
+      message("Erro ao extrair user name: ", e$message)
+      user_name <<- rep(NA_character_, nrow(dados))
+    })
   }
   
   dados <- dados %>%
     mutate(
       responsavel = case_when(
-        user_name == "kelly.ewers" ~ "Kelly",
-        user_name == "LDR" ~ "Matheus", 
-        user_name == "Gustavo Dias" ~ "Consultoria",
-        !is.na(user_name) ~ user_name,
+        !is.na(user_name) & user_name == "kelly.ewers" ~ "Kelly",
+        !is.na(user_name) & user_name == "LDR" ~ "Matheus", 
+        !is.na(user_name) & user_name == "Gustavo Dias" ~ "Consultoria",
+        !is.na(user_name) & user_name != "" ~ as.character(user_name),
         TRUE ~ "Desconhecido"
       ),
-      Relevante = ifelse(!is.na(duration) & as.numeric(duration) >= 60, 1, 0)
+      # Tratar duration de forma mais segura
+      duration_numeric = case_when(
+        is.na(duration) ~ 0,
+        is.numeric(duration) ~ duration,
+        is.character(duration) ~ suppressWarnings(as.numeric(duration)),
+        TRUE ~ 0
+      ),
+      duration_numeric = ifelse(is.na(duration_numeric), 0, duration_numeric),
+      Relevante = ifelse(duration_numeric >= 60, 1, 0)
     )
   
   # -------- Agregação de desempenho --------
@@ -272,19 +313,45 @@ api_etl <- function(agendamento) {
   
   desempenho <- desempenho %>%
     mutate(
-      meta_ligacoes = ifelse(responsavel %in% metas_na, NA, 120),
-      meta_ligacoes_relevantes = ifelse(responsavel %in% metas_na, NA, 24),
+      meta_ligacoes = case_when(
+        responsavel %in% metas_na ~ NA_real_,
+        TRUE ~ 120
+      ),
+      meta_ligacoes_relevantes = case_when(
+        responsavel %in% metas_na ~ NA_real_,
+        TRUE ~ 24
+      ),
       meta_agendamento = case_when(
         responsavel %in% c("Kelly", "Priscila Prado", "Consultoria") ~ NA_real_,
         responsavel == "Matheus" ~ 6/5,
         TRUE ~ 2
       ),
-      atingimento_ligacoes = ifelse(!is.na(meta_ligacoes) & meta_ligacoes != 0, ligacoes_totais / meta_ligacoes, 0),
-      atingimento_ligacoes_relevantes = ifelse(!is.na(meta_ligacoes_relevantes) & meta_ligacoes_relevantes != 0, ligacoes_relevantes / meta_ligacoes_relevantes, 0),
-      atingimento_agendamento = ifelse(!is.na(meta_agendamento) & meta_agendamento != 0, agendamento / meta_agendamento, 0),
-      ligacao_x_ligacao_relevante = ifelse(ligacoes_totais != 0, ligacoes_relevantes / ligacoes_totais, 0),
-      ligacao_relevante_x_agendamento = ifelse(ligacoes_relevantes != 0, agendamento / ligacoes_relevantes, 0),
-      ligacao_x_agendamento = ifelse(ligacoes_totais != 0, agendamento / ligacoes_totais, 0),
+      # Calcular atingimentos de forma mais segura
+      atingimento_ligacoes = case_when(
+        is.na(meta_ligacoes) | meta_ligacoes == 0 ~ 0,
+        TRUE ~ ligacoes_totais / meta_ligacoes
+      ),
+      atingimento_ligacoes_relevantes = case_when(
+        is.na(meta_ligacoes_relevantes) | meta_ligacoes_relevantes == 0 ~ 0,
+        TRUE ~ ligacoes_relevantes / meta_ligacoes_relevantes
+      ),
+      atingimento_agendamento = case_when(
+        is.na(meta_agendamento) | meta_agendamento == 0 ~ 0,
+        TRUE ~ agendamento / meta_agendamento
+      ),
+      # Calcular proporções de forma mais segura
+      ligacao_x_ligacao_relevante = case_when(
+        ligacoes_totais == 0 ~ 0,
+        TRUE ~ ligacoes_relevantes / ligacoes_totais
+      ),
+      ligacao_relevante_x_agendamento = case_when(
+        ligacoes_relevantes == 0 ~ 0,
+        TRUE ~ agendamento / ligacoes_relevantes
+      ),
+      ligacao_x_agendamento = case_when(
+        ligacoes_totais == 0 ~ 0,
+        TRUE ~ agendamento / ligacoes_totais
+      ),
       data = data_hoje
     ) %>%
     arrange(desc(agendamento))
@@ -297,26 +364,37 @@ api_etl <- function(agendamento) {
     message("Lendo dados históricos da planilha...")
     dados_historicos <- read_sheet(ss = sheet_id, sheet = "Página1", col_types = "cnnnnnnnnnnnnc")
     
-    if ("data" %in% names(dados_historicos)) {
+    if ("data" %in% names(dados_historicos) && nrow(dados_historicos) > 0) {
       dados_historicos$data <- as.Date(dados_historicos$data)
       dados_filtrados <- filter(dados_historicos, data != data_hoje)
     } else {
       dados_filtrados <- data.frame()
     }
     
-    bind_rows(dados_filtrados, desempenho)
+    # Se desempenho tem dados, fazer bind_rows
+    if (nrow(desempenho) > 0) {
+      bind_rows(dados_filtrados, desempenho)
+    } else {
+      # Se não há desempenho novo, retornar apenas dados históricos
+      dados_filtrados
+    }
     
   }, error = function(e){
     message("Falha ao ler dados históricos: ", e$message)
     desempenho
   })
   
-  tryCatch({
-    write_sheet(dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
-    message("Dados salvos no Google Sheets com sucesso!")
-  }, error = function(e){
-    message("Erro ao salvar no Google Sheets: ", e$message)
-  })
+  # Só tentar salvar se há dados para salvar
+  if (nrow(dados_historicos_atualizados) > 0) {
+    tryCatch({
+      write_sheet(dados_historicos_atualizados, ss = sheet_id, sheet = "Página1")
+      message("Dados salvos no Google Sheets com sucesso!")
+    }, error = function(e){
+      message("Erro ao salvar no Google Sheets: ", e$message)
+    })
+  } else {
+    message("Nenhum dado para salvar no Google Sheets")
+  }
   
   message("=== ETL concluído ===")
   return(dados_historicos_atualizados)
@@ -468,13 +546,40 @@ function(req, res) {
     message("Agendamentos processados: ", jsonlite::toJSON(agendamentos, auto_unbox = TRUE))
     
     dados_completos <- api_etl(agendamentos)
+    
+    # Verificar se dados_completos tem conteúdo válido
+    if (is.null(dados_completos) || nrow(dados_completos) == 0) {
+      message("Nenhum dado retornado pelo ETL para hoje")
+      return(list(
+        status = "sucesso",
+        message = "Não há ligações para hoje",
+        data = as.character(Sys.Date()),
+        dados = list()
+      ))
+    }
+    
     dados_completos$data <- as.Date(dados_completos$data)
     
     message("Filtrando os dados pelo dia ", Sys.Date())
     desempenho_diario <- dados_completos %>%
       filter(data == Sys.Date())
     
-    return(desempenho_diario)
+    if (nrow(desempenho_diario) == 0) {
+      return(list(
+        status = "sucesso", 
+        message = "Não há ligações para hoje",
+        data = as.character(Sys.Date()),
+        dados = list()
+      ))
+    }
+    
+    return(list(
+      status = "sucesso",
+      message = paste("Encontrados", nrow(desempenho_diario), "registros"),
+      data = as.character(Sys.Date()),
+      dados = desempenho_diario
+    ))
+    
   }, error = function(e) {
     message("Erro no processamento ETL diário: ", e$message)
     res$status <- 500
@@ -515,15 +620,43 @@ function(req, res) {
     message("Agendamentos processados: ", jsonlite::toJSON(agendamentos, auto_unbox = TRUE))
     
     dados_completos <- api_etl(agendamentos)
+    
+    # Verificar se dados_completos tem conteúdo válido
+    if (is.null(dados_completos) || nrow(dados_completos) == 0) {
+      message("Nenhum dado retornado pelo ETL para esta semana")
+      inicio_da_semana <- floor_date(Sys.Date(), "week", week_start = 1)
+      return(list(
+        status = "sucesso",
+        message = "Não há ligações para esta semana",
+        periodo = paste("desde", as.character(inicio_da_semana)),
+        dados = list()
+      ))
+    }
+    
     dados_completos$data <- as.Date(dados_completos$data)
     
     inicio_da_semana <- floor_date(Sys.Date(), "week", week_start = 1)
     dados_semana <- dados_completos %>%
       filter(data >= inicio_da_semana)
     
+    if (nrow(dados_semana) == 0) {
+      return(list(
+        status = "sucesso",
+        message = "Não há ligações para esta semana",
+        periodo = paste("desde", as.character(inicio_da_semana)),
+        dados = list()
+      ))
+    }
+    
     desempenho_final <- desempenho_semana(dados_semana)
     
-    return(desempenho_final)
+    return(list(
+      status = "sucesso",
+      message = paste("Processados", nrow(dados_semana), "registros da semana"),
+      periodo = paste("desde", as.character(inicio_da_semana)),
+      dados = desempenho_final
+    ))
+    
   }, error = function(e) {
     message("Erro no processamento ETL semanal: ", e$message)
     res$status <- 500
