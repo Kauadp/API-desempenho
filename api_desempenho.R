@@ -938,3 +938,94 @@ function(req, res) {
     return(list(erro=paste("Erro interno:", e$message)))
   })
 }
+
+# --------------------
+# Endpoint GET grafico-agendamentos
+# --------------------
+#* @get /grafico-agendamentos
+#* @serializer unboxedJSON
+function(req, res) {
+  tryCatch({
+    message("=== Iniciando processamento do gráfico de agendamentos ===")
+    
+    inicio_da_semana <- floor_date(Sys.Date(), "week", week_start = 1)
+    message("Início da semana calculado: ", as.character(inicio_da_semana))
+    
+    sheet_id <- "1crNO9HynYJJnHv5PpnzECokEDeatnTNMbWQdtogA1e4"
+    message("Lendo dados da planilha de agendamentos...")
+    
+    dados_agendamentos <- read_sheet(sheet_id, sheet="Agendamentos")
+    message("Dados lidos com sucesso. Total de registros: ", nrow(dados_agendamentos))
+    
+    dados_agendamentos$data <- as.Date(dados_agendamentos$data)
+    message("Conversão de datas concluída")
+    
+    agendamentos_semana <- dados_agendamentos %>%
+      filter(data >= inicio_da_semana)
+    
+    message("Registros filtrados para a semana: ", nrow(agendamentos_semana))
+    
+    if (nrow(agendamentos_semana) == 0) {
+      message("Nenhum agendamento encontrado para a semana")
+      
+      # Mesmo sem agendamentos, criar estrutura completa da semana com zeros
+      dias_da_semana <- data.frame(
+        data = seq(from = inicio_da_semana, by = "day", length.out = 5)
+      )
+      
+      dados_grafico_vazio <- dias_da_semana %>%
+        mutate(
+          total_agendamentos = 0,
+          dia_semana = weekdays(data, abbreviate = FALSE)
+        ) %>%
+        arrange(data)
+      
+      message("Retornando estrutura completa da semana com zeros")
+      
+      return(list(
+        status = "sucesso", 
+        message = "Nenhum agendamento encontrado, mas retornando semana completa", 
+        periodo = paste("desde", as.character(inicio_da_semana)), 
+        dados = dados_grafico_vazio
+      ))
+    }
+    
+    # Criar vetor completo com todos os dias da semana
+    dias_da_semana <- data.frame(
+      data = seq(from = inicio_da_semana, by = "day", length.out = 5)
+    )
+    message("Dias da semana criados: ", paste(as.character(dias_da_semana$data), collapse = ", "))
+    
+    # Agregar agendamentos por data (apenas para os dias que têm dados)
+    agendamentos_por_dia <- agendamentos_semana %>%
+      group_by(data) %>%
+      summarise(total_agendamentos = n(), .groups = "drop")
+    
+    message("Dias com agendamentos encontrados: ", nrow(agendamentos_por_dia))
+    
+    # Fazer left join para incluir todos os dias da semana
+    dados_grafico <- dias_da_semana %>%
+      left_join(agendamentos_por_dia, by = "data") %>%
+      mutate(
+        total_agendamentos = ifelse(is.na(total_agendamentos), 0, total_agendamentos),
+        dia_semana = weekdays(data, abbreviate = FALSE)
+      ) %>%
+      arrange(data)
+    
+    message("Dados do gráfico processados com sucesso. Total de dias: ", nrow(dados_grafico))
+    message("Estrutura dos dados do gráfico:")
+    message(paste(capture.output(str(dados_grafico)), collapse = "\n"))
+    
+    return(list(
+      status = "sucesso",
+      message = paste("Dados do gráfico gerados com sucesso para 7 dias da semana"),
+      periodo = paste("desde", as.character(inicio_da_semana)),
+      dados = dados_grafico
+    ))
+    
+  }, error = function(e) {
+    message("Erro no processamento do gráfico de agendamentos: ", e$message)
+    res$status <- 500
+    return(list(erro = paste("Erro interno:", e$message)))
+  })
+}
