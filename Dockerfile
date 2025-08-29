@@ -15,7 +15,6 @@ WORKDIR /app
 
 # Copia arquivos da aplicação
 COPY api_desempenho.R /app/api_desempenho.R
-COPY funcoes.R /app/funcoes.R
 
 # Instala pacotes R leves (compilação rápida)
 RUN R -e "install.packages(c('plumber','dplyr','forcats','jsonlite','jose'), repos='https://cloud.r-project.org')"
